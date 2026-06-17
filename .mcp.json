@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "laravel-boost": {
+            "command": "wsl.exe",
+            "args": [
+                "/home/jazz/.config/herd-lite/bin/php",
+                "/home/jazz/projects/transaction-tracking/artisan",
+                "boost:mcp"
+            ]
+        }
+    }
+}
