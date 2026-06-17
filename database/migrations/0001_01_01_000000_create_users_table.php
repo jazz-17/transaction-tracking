@@ -17,6 +17,8 @@ return new class extends Migration
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
+            // ISO 4217 base currency for all reports; null until onboarding sets it (immutable thereafter).
+            $table->string('base_currency', 3)->nullable();
             $table->rememberToken();
             $table->timestamps();
         });
