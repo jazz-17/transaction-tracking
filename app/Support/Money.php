@@ -56,6 +56,15 @@ final readonly class Money
         return Currency::of($currency)->getDefaultFractionDigits();
     }
 
+    /**
+     * The plain decimal amount as a string (no symbol, no grouping), e.g. "50.00",
+     * "37" for JPY. Suited to pre-filling a numeric form input from stored minor units.
+     */
+    public function amount(): string
+    {
+        return (string) BrickMoney::ofMinor($this->minorUnits, $this->currency)->getAmount();
+    }
+
     public function isZero(): bool
     {
         return $this->minorUnits === 0;
