@@ -65,4 +65,21 @@ class Account extends Model
     {
         return $this->hasMany(Posting::class);
     }
+
+    /**
+     * Native balance: Σ amount in this account's own currency (decision #5).
+     * Computed from postings — the only source of truth, so it can't drift.
+     */
+    public function balance(): int
+    {
+        return (int) $this->postings()->sum('amount');
+    }
+
+    /**
+     * Balance translated to the user's base currency: Σ base_amount.
+     */
+    public function baseBalance(): int
+    {
+        return (int) $this->postings()->sum('base_amount');
+    }
 }

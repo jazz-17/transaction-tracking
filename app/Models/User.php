@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Enums\AccountType;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
@@ -11,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * @property int $id
@@ -60,5 +62,19 @@ class User extends Authenticatable
     public function transactions(): HasMany
     {
         return $this->hasMany(Transaction::class);
+    }
+
+    /**
+     * Net worth in base-currency minor units: Σ base_amount over asset + liability
+     * accounts (what you own minus what you owe). Assets carry value positive,
+     * liabilities negative, so a plain sum is net worth.
+     */
+    public function netWorth(): int
+    {
+        return (int) DB::table('postings')
+            ->join('accounts', 'accounts.id', '=', 'postings.account_id')
+            ->where('postings.user_id', $this->getKey())
+            ->whereIn('accounts.type', [AccountType::Asset->value, AccountType::Liability->value])
+            ->sum('postings.base_amount');
     }
 }
