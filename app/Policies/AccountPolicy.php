@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Enums\AccountType;
 use App\Models\Account;
 use App\Models\User;
 
@@ -21,8 +22,13 @@ class AccountPolicy
         return $user->id === $account->user_id;
     }
 
+    /**
+     * The hidden equity "Opening Balances" account underpins every seeded balance and is
+     * never user-facing (decision #10); deleting it would unbalance history, so it can
+     * never be deleted by anyone.
+     */
     public function delete(User $user, Account $account): bool
     {
-        return $user->id === $account->user_id;
+        return $user->id === $account->user_id && $account->type !== AccountType::Equity;
     }
 }

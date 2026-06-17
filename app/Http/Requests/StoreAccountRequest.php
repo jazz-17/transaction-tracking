@@ -41,8 +41,9 @@ class StoreAccountRequest extends FormRequest
             'color' => ['nullable', 'string', 'max:50'],
             // Optional starting balance for a My Account, entered as the human-friendly
             // display value (what you have / what you owe); the controller seeds it
-            // against the equity account via RecordTransaction.
-            'opening_balance' => ['nullable', 'numeric', 'gt:0'],
+            // against the equity account via RecordTransaction. Zero is allowed and
+            // simply means "no starting balance" — same as leaving it blank.
+            'opening_balance' => ['nullable', 'numeric', 'min:0'],
             'opening_balance_base' => ['nullable', 'numeric', 'gt:0'],
         ];
     }
@@ -57,7 +58,7 @@ class StoreAccountRequest extends FormRequest
     {
         return [
             function (Validator $validator): void {
-                if (! $this->isMyAccount() || ! $this->filled('opening_balance')) {
+                if (! $this->isMyAccount() || ! $this->hasOpeningBalance()) {
                     return;
                 }
 
@@ -76,5 +77,14 @@ class StoreAccountRequest extends FormRequest
             AccountType::Asset->value,
             AccountType::Liability->value,
         ], true);
+    }
+
+    /**
+     * Whether a non-zero opening balance was actually provided (a blank field or a 0
+     * both mean "no starting balance", so neither needs an FX base value).
+     */
+    private function hasOpeningBalance(): bool
+    {
+        return $this->filled('opening_balance') && (float) $this->input('opening_balance') > 0;
     }
 }

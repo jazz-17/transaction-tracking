@@ -76,17 +76,48 @@ it('deletes an account with no postings', function () {
     expect(Account::find($account->id))->toBeNull();
 });
 
-it('refuses to delete an account that has transactions', function () {
-    $account = Account::factory()->expense()->for($this->user)->create();
+it('refuses to delete an account that has real transactions', function () {
+    $account = Account::factory()->asset('PEN')->for($this->user)->create();
+    $category = Account::factory()->expense()->for($this->user)->create();
     $txn = Transaction::factory()->for($this->user)->create();
     Posting::factory()->create([
         'transaction_id' => $txn->id, 'user_id' => $this->user->id, 'account_id' => $account->id,
-        'amount' => 100, 'base_amount' => 100, 'currency' => 'PEN',
+        'amount' => -5000, 'base_amount' => -5000, 'currency' => 'PEN',
+    ]);
+    Posting::factory()->create([
+        'transaction_id' => $txn->id, 'user_id' => $this->user->id, 'account_id' => $category->id,
+        'amount' => 5000, 'base_amount' => 5000, 'currency' => 'PEN',
     ]);
 
     $this->delete(route('accounts.destroy', $account))->assertSessionHasErrors('account');
 
     expect(Account::find($account->id))->not->toBeNull();
+});
+
+it('hard-deletes a My Account whose only history is its opening-balance seed', function () {
+    $equity = Account::factory()->equity()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Checking', 'type' => 'asset', 'currency' => 'PEN', 'opening_balance' => '1000',
+    ])->assertRedirect();
+
+    $checking = Account::where('name', 'Checking')->sole();
+    expect(Transaction::count())->toBe(1); // the seed
+
+    $this->delete(route('accounts.destroy', $checking))->assertValid()->assertRedirect();
+
+    expect(Account::find($checking->id))->toBeNull()    // account gone
+        ->and(Transaction::count())->toBe(0)            // seed transaction removed
+        ->and(Posting::count())->toBe(0)                // both legs cascaded
+        ->and($equity->refresh()->balance())->toBe(0);  // equity rebalanced, books intact
+});
+
+it('refuses to delete the hidden equity account', function () {
+    $equity = Account::factory()->equity()->for($this->user)->create();
+
+    $this->delete(route('accounts.destroy', $equity))->assertForbidden();
+
+    expect(Account::find($equity->id))->not->toBeNull();
 });
 
 it('cannot update or delete another user\'s account', function () {
@@ -153,4 +184,15 @@ it('creates an account with no transaction when no opening balance is given', fu
     ])->assertRedirect();
 
     expect(Transaction::count())->toBe(0);
+});
+
+it('accepts a zero opening balance as no starting balance', function () {
+    Account::factory()->equity()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Visa', 'type' => 'liability', 'currency' => 'PEN', 'opening_balance' => '0',
+    ])->assertValid()->assertRedirect();
+
+    expect(Account::where('name', 'Visa')->exists())->toBeTrue()
+        ->and(Transaction::count())->toBe(0);
 });

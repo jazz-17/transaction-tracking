@@ -70,7 +70,9 @@ const showOpeningBalanceBase = computed(
 const form = useForm({
     name: '',
     type: typeOptions[0].value,
-    currency: '',
+    // Default to the user's base currency so most accounts need no manual pick;
+    // still changeable for a foreign card.
+    currency: props.baseCurrency,
     archived: false,
     opening_balance: '',
     opening_balance_base: '',
@@ -84,7 +86,7 @@ watch(open, (isOpen) => {
     form.clearErrors();
     form.name = props.account?.name ?? '';
     form.type = props.account?.type ?? typeOptions[0].value;
-    form.currency = props.account?.currency ?? '';
+    form.currency = props.account?.currency ?? props.baseCurrency;
     form.archived = props.account?.archived ?? false;
     form.opening_balance = '';
     form.opening_balance_base = '';

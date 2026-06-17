@@ -9,11 +9,14 @@ use App\Enums\TransactionKind;
 use App\Http\Requests\StoreAccountRequest;
 use App\Http\Requests\UpdateAccountRequest;
 use App\Models\Account;
+use App\Models\Transaction;
 use App\Models\User;
 use App\Support\Currencies;
 use App\Support\Money;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
@@ -82,15 +85,56 @@ class AccountController extends Controller
     {
         Gate::authorize('delete', $account);
 
-        if ($account->postings()->withoutGlobalScope('user')->exists()) {
+        // An account whose entire history is its own opening-balance seed — a transaction
+        // that touches only this account and the hidden equity account — can be safely
+        // hard-deleted: we remove the seed transaction(s) along with it (decision #8).
+        // Anything touching another real account must be archived instead so the books
+        // stay balanced (Σ base = 0); deleting one leg would orphan the counter-posting.
+        if ($this->hasRealTransactions($account)) {
             throw ValidationException::withMessages([
                 'account' => 'This account has transactions. Archive it instead of deleting.',
             ]);
         }
 
-        $account->delete();
+        DB::transaction(function () use ($account): void {
+            $account->load('postings.transaction');
+
+            // Delete the whole seed transaction (both legs) so the equity account stays
+            // balanced; the account's own posting is cascaded via transaction_id, leaving
+            // no FK to block the account delete below.
+            $account->postings
+                ->pluck('transaction')
+                ->filter()
+                ->unique('id')
+                ->each(fn (Transaction $transaction) => $this->record->delete($transaction));
+
+            $account->delete();
+        });
 
         return back();
+    }
+
+    /**
+     * Whether this account participates in a transaction that touches another real
+     * account — anything other than itself and the hidden equity "Opening Balances"
+     * account. Opening-balance seeds touch only those two, so a seed-only account reports
+     * false and is hard-deletable; an account with genuine activity reports true and must
+     * be archived. Equity is unreachable from entry (StoreTransactionRequest pins every
+     * account id to asset/liability/income/expense), so this check is exact, not heuristic.
+     */
+    private function hasRealTransactions(Account $account): bool
+    {
+        return $account->postings()
+            ->withoutGlobalScope('user')
+            ->whereHas('transaction.postings', function (Builder $query) use ($account): void {
+                $query->withoutGlobalScope('user')
+                    ->where('account_id', '!=', $account->id)
+                    ->whereHas('account', function (Builder $accountQuery): void {
+                        $accountQuery->withoutGlobalScope('user')
+                            ->where('type', '!=', AccountType::Equity->value);
+                    });
+            })
+            ->exists();
     }
 
     /**
@@ -103,7 +147,8 @@ class AccountController extends Controller
      */
     private function seedOpeningBalance(User $user, Account $account, array $data): void
     {
-        if (blank($data['opening_balance'] ?? null)) {
+        // Blank or zero both mean "no starting balance" — nothing to record.
+        if ((float) ($data['opening_balance'] ?? 0) <= 0) {
             return;
         }
 
