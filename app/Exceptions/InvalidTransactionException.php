@@ -29,4 +29,9 @@ final class InvalidTransactionException extends RuntimeException
 
         return new self("Account(s) [{$ids}] do not belong to the user.");
     }
+
+    public static function currencyMismatch(int $accountId, string $expected, string $actual): self
+    {
+        return new self("Posting on account [{$accountId}] must be denominated in {$expected}, got {$actual}.");
+    }
 }

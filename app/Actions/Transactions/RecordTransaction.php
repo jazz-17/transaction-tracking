@@ -34,7 +34,7 @@ final class RecordTransaction
         ?string $payee = null,
         ?string $memo = null,
     ): Transaction {
-        $this->validate((int) $user->getKey(), $postings);
+        $this->validate((int) $user->getKey(), (string) $user->base_currency, $postings);
 
         return DB::transaction(function () use ($user, $kind, $date, $postings, $payee, $memo): Transaction {
             $transaction = new Transaction;
@@ -66,7 +66,7 @@ final class RecordTransaction
         ?string $memo = null,
     ): Transaction {
         $userId = $transaction->user_id;
-        $this->validate($userId, $postings);
+        $this->validate($userId, (string) $transaction->user->base_currency, $postings);
 
         return DB::transaction(function () use ($transaction, $userId, $kind, $date, $postings, $payee, $memo): Transaction {
             $transaction->kind = $kind;
@@ -104,7 +104,7 @@ final class RecordTransaction
     /**
      * @param  array<int, PostingInput>  $postings
      */
-    private function validate(int $userId, array $postings): void
+    private function validate(int $userId, string $baseCurrency, array $postings): void
     {
         if (count($postings) < 2) {
             throw InvalidTransactionException::tooFewPostings(count($postings));
@@ -115,15 +115,31 @@ final class RecordTransaction
             $postings,
         )));
 
-        $ownedIds = Account::withoutGlobalScope('user')
+        $accounts = Account::withoutGlobalScope('user')
             ->where('user_id', $userId)
             ->whereIn('id', $accountIds)
-            ->pluck('id')
-            ->all();
+            ->get(['id', 'type', 'currency'])
+            ->keyBy('id');
 
-        $missing = array_values(array_diff($accountIds, $ownedIds));
+        $missing = array_values(array_diff($accountIds, $accounts->keys()->all()));
         if ($missing !== []) {
             throw InvalidTransactionException::accountNotOwned($missing);
+        }
+
+        foreach ($postings as $posting) {
+            /** @var Account $account */
+            $account = $accounts->get($posting->accountId);
+
+            // Invariant #4 / Model A: asset/liability legs carry the account's own
+            // currency; income/expense/equity legs are always in base. This is what keeps
+            // each account's native balance (Σ amount) a summable, meaningful number.
+            $expected = $account->type->usesNativeCurrency()
+                ? (string) $account->currency
+                : $baseCurrency;
+
+            if (strtoupper($posting->currency) !== strtoupper($expected)) {
+                throw InvalidTransactionException::currencyMismatch($posting->accountId, $expected, $posting->currency);
+            }
         }
 
         $baseSum = array_sum(array_map(

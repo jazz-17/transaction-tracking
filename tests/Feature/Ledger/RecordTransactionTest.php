@@ -164,6 +164,27 @@ it('rejects a posting to an account owned by another user', function () {
     expect(Transaction::count())->toBe(0);
 });
 
+it('rejects a My Account posting not in its native currency', function () {
+    // Amex is USD; posting it in PEN still sums to zero in base but corrupts Σ amount.
+    expect(fn () => $this->record->create($this->user, TransactionKind::Expense, '2026-06-17', [
+        new PostingInput($this->amex->id, -37000, 'PEN', -37000),
+        new PostingInput($this->groceries->id, 37000, 'PEN', 37000),
+    ]))->toThrow(InvalidTransactionException::class);
+
+    expect(Transaction::count())->toBe(0)
+        ->and(Posting::count())->toBe(0);
+});
+
+it('rejects a category posting not denominated in base', function () {
+    // Groceries is a category → always base (PEN); a USD leg is invalid even when balanced.
+    expect(fn () => $this->record->create($this->user, TransactionKind::Expense, '2026-06-17', [
+        new PostingInput($this->visa->id, -5000, 'PEN', -5000),
+        new PostingInput($this->groceries->id, 5000, 'USD', 5000),
+    ]))->toThrow(InvalidTransactionException::class);
+
+    expect(Transaction::count())->toBe(0);
+});
+
 it('edits a transaction by atomically replacing its posting set', function () {
     $txn = $this->record->create($this->user, TransactionKind::Expense, '2026-06-10', [
         new PostingInput($this->visa->id, -5000, 'PEN', -5000),
