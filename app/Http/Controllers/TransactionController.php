@@ -27,13 +27,6 @@ class TransactionController extends Controller
     {
         $base = (string) $request->user()->base_currency;
 
-        $transactions = Transaction::query()
-            ->with('postings.account')
-            ->orderByDesc('date')
-            ->orderByDesc('id')
-            ->get()
-            ->map(fn (Transaction $transaction): array => $this->present($transaction, $base));
-
         $accounts = Account::query()
             ->whereIn('type', [AccountType::Asset->value, AccountType::Liability->value])
             ->where('archived', false)
@@ -53,7 +46,15 @@ class TransactionController extends Controller
             ->get(['id', 'name', 'type']);
 
         return Inertia::render('transactions/Index', [
-            'transactions' => $transactions,
+            // Deferred: the list can grow unbounded, so the page shell (and the entry
+            // form's account/category data) renders instantly while history streams in.
+            'transactions' => Inertia::defer(fn (): array => Transaction::query()
+                ->with('postings.account')
+                ->orderByDesc('date')
+                ->orderByDesc('id')
+                ->get()
+                ->map(fn (Transaction $transaction): array => $this->present($transaction, $base))
+                ->all()),
             'accounts' => $accounts->values(),
             'expenseCategories' => $this->categoryOptions($categories, AccountType::Expense),
             'incomeCategories' => $this->categoryOptions($categories, AccountType::Income),

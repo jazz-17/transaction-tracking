@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\Transactions\PostingInput;
+use App\Actions\Transactions\RecordTransaction;
 use App\Enums\AccountType;
+use App\Enums\TransactionKind;
 use App\Http\Requests\StoreAccountRequest;
 use App\Http\Requests\UpdateAccountRequest;
 use App\Models\Account;
+use App\Models\User;
 use App\Support\Currencies;
 use App\Support\Money;
 use Illuminate\Http\RedirectResponse;
@@ -17,6 +21,8 @@ use Inertia\Response;
 
 class AccountController extends Controller
 {
+    public function __construct(private readonly RecordTransaction $record) {}
+
     public function index(Request $request): Response
     {
         $base = (string) $request->user()->base_currency;
@@ -47,7 +53,7 @@ class AccountController extends Controller
         $data = $request->validated();
         $type = AccountType::from($data['type']);
 
-        Account::create([
+        $account = Account::create([
             'name' => $data['name'],
             'type' => $type,
             'currency' => $type->usesNativeCurrency() ? strtoupper((string) $data['currency']) : null,
@@ -55,6 +61,10 @@ class AccountController extends Controller
             'icon' => $data['icon'] ?? null,
             'color' => $data['color'] ?? null,
         ]);
+
+        if ($type->usesNativeCurrency()) {
+            $this->seedOpeningBalance($request->user(), $account, $data);
+        }
 
         return back();
     }
@@ -81,6 +91,43 @@ class AccountController extends Controller
         $account->delete();
 
         return back();
+    }
+
+    /**
+     * Seed a new My Account's starting balance against the equity "Opening Balances"
+     * account (decision #10) through the single write path. The user enters the
+     * human-friendly display value, so the stored amount is flipped back to its raw
+     * sign via the type's display sign (asset +, liability −).
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function seedOpeningBalance(User $user, Account $account, array $data): void
+    {
+        if (blank($data['opening_balance'] ?? null)) {
+            return;
+        }
+
+        $currency = (string) $account->currency;
+        $base = (string) $user->base_currency;
+
+        $nativeMinor = Money::parse($data['opening_balance'], $currency)->minorUnits;
+        $baseMinor = $currency === $base
+            ? $nativeMinor
+            : Money::parse($data['opening_balance_base'], $base)->minorUnits;
+
+        $sign = $account->type->displaySign();
+        $equity = Account::query()->where('type', AccountType::Equity->value)->firstOrFail();
+
+        $this->record->create(
+            $user,
+            TransactionKind::Transfer,
+            now()->toDateString(),
+            [
+                new PostingInput((int) $account->id, $sign * $nativeMinor, $currency, $sign * $baseMinor),
+                new PostingInput((int) $equity->id, -$sign * $baseMinor, $base, -$sign * $baseMinor),
+            ],
+            payee: 'Opening balance',
+        );
     }
 
     /**

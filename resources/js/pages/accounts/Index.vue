@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Head, router } from '@inertiajs/vue3';
 import { Archive, ArchiveRestore, Pencil, Plus, Trash2 } from '@lucide/vue';
+import { toast } from 'vue-sonner';
 import AccountFormDialog from '@/components/AccountFormDialog.vue';
 import type { AccountRow } from '@/components/AccountFormDialog.vue';
 import { Badge } from '@/components/ui/badge';
@@ -38,7 +39,15 @@ function remove(account: AccountRowVm) {
         return;
     }
 
-    router.delete(destroy(account.id).url, { preserveScroll: true });
+    router.delete(destroy(account.id).url, {
+        preserveScroll: true,
+        // Deleting an account that has postings is blocked server-side; surface that.
+        onError: (errors) => {
+            if (errors.account) {
+                toast.error(errors.account);
+            }
+        },
+    });
 }
 </script>
 
@@ -50,7 +59,11 @@ function remove(account: AccountRowVm) {
         <Card>
             <CardHeader class="flex flex-row items-center justify-between">
                 <CardTitle>My Accounts</CardTitle>
-                <AccountFormDialog group="account" :currencies="currencies">
+                <AccountFormDialog
+                    group="account"
+                    :currencies="currencies"
+                    :base-currency="baseCurrency"
+                >
                     <Button size="sm">
                         <Plus class="size-4" /> New account
                     </Button>
@@ -83,6 +96,7 @@ function remove(account: AccountRowVm) {
                         <AccountFormDialog
                             group="account"
                             :currencies="currencies"
+                            :base-currency="baseCurrency"
                             :account="account"
                         >
                             <Button variant="ghost" size="icon" title="Edit">
@@ -118,7 +132,11 @@ function remove(account: AccountRowVm) {
         <Card>
             <CardHeader class="flex flex-row items-center justify-between">
                 <CardTitle>Categories</CardTitle>
-                <AccountFormDialog group="category" :currencies="currencies">
+                <AccountFormDialog
+                    group="category"
+                    :currencies="currencies"
+                    :base-currency="baseCurrency"
+                >
                     <Button size="sm">
                         <Plus class="size-4" /> New category
                     </Button>
@@ -150,6 +168,7 @@ function remove(account: AccountRowVm) {
                         <AccountFormDialog
                             group="category"
                             :currencies="currencies"
+                            :base-currency="baseCurrency"
                             :account="category"
                         >
                             <Button variant="ghost" size="icon" title="Edit">

@@ -34,6 +34,7 @@ export type AccountRow = {
 const props = defineProps<{
     group: 'account' | 'category';
     currencies: Array<{ code: string; name: string }>;
+    baseCurrency: string;
     account?: AccountRow | null;
 }>();
 
@@ -54,12 +55,25 @@ const isEditing = computed(() => !!props.account);
 const needsCurrency = computed(
     () => form.type === 'asset' || form.type === 'liability',
 );
+// An opening balance can be seeded only on creation of a My Account; its base value
+// is needed when the account currency differs from base.
+const showOpeningBalance = computed(
+    () => !isEditing.value && needsCurrency.value,
+);
+const showOpeningBalanceBase = computed(
+    () =>
+        showOpeningBalance.value &&
+        !!form.currency &&
+        form.currency !== props.baseCurrency,
+);
 
 const form = useForm({
     name: '',
     type: typeOptions[0].value,
     currency: '',
     archived: false,
+    opening_balance: '',
+    opening_balance_base: '',
 });
 
 watch(open, (isOpen) => {
@@ -72,6 +86,8 @@ watch(open, (isOpen) => {
     form.type = props.account?.type ?? typeOptions[0].value;
     form.currency = props.account?.currency ?? '';
     form.archived = props.account?.archived ?? false;
+    form.opening_balance = '';
+    form.opening_balance_base = '';
 });
 
 function submit() {
@@ -162,6 +178,42 @@ function submit() {
                         </SelectContent>
                     </Select>
                     <InputError :message="form.errors.currency" />
+                </div>
+
+                <div v-if="showOpeningBalance" class="grid gap-2">
+                    <Label for="opening-balance">
+                        Opening balance
+                        <span class="text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Input
+                        id="opening-balance"
+                        v-model="form.opening_balance"
+                        type="number"
+                        step="any"
+                        min="0"
+                        inputmode="decimal"
+                        :placeholder="
+                            form.type === 'liability'
+                                ? 'What you currently owe'
+                                : 'What you currently have'
+                        "
+                    />
+                    <InputError :message="form.errors.opening_balance" />
+                </div>
+
+                <div v-if="showOpeningBalanceBase" class="grid gap-2">
+                    <Label for="opening-balance-base">
+                        Opening balance in {{ baseCurrency }}
+                    </Label>
+                    <Input
+                        id="opening-balance-base"
+                        v-model="form.opening_balance_base"
+                        type="number"
+                        step="any"
+                        min="0"
+                        inputmode="decimal"
+                    />
+                    <InputError :message="form.errors.opening_balance_base" />
                 </div>
 
                 <DialogFooter>

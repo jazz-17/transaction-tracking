@@ -118,11 +118,14 @@ it('exposes an edit payload that round-trips a single-currency expense', functio
     ]);
 
     $this->get(route('transactions.index'))->assertInertia(fn (Assert $page) => $page
-        ->where('transactions.0.kind', 'expense')
-        ->where('transactions.0.direction', 'out')
-        ->where('transactions.0.edit.account_id', $this->visa->id)
-        ->where('transactions.0.edit.category_id', $this->groceries->id)
-        ->where('transactions.0.edit.amount', '50.00')
+        ->missing('transactions') // deferred: absent on first load
+        ->loadDeferredProps(fn (Assert $reload) => $reload
+            ->where('transactions.0.kind', 'expense')
+            ->where('transactions.0.direction', 'out')
+            ->where('transactions.0.edit.account_id', $this->visa->id)
+            ->where('transactions.0.edit.category_id', $this->groceries->id)
+            ->where('transactions.0.edit.amount', '50.00')
+        )
     );
 });
 

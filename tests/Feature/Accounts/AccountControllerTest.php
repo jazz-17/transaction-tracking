@@ -95,3 +95,62 @@ it('cannot update or delete another user\'s account', function () {
     $this->put(route('accounts.update', $theirs), ['name' => 'x'])->assertNotFound();
     $this->delete(route('accounts.destroy', $theirs))->assertNotFound();
 });
+
+it('seeds an opening balance for a new asset account against equity', function () {
+    $equity = Account::factory()->equity()->for($this->user)->create(['name' => 'Opening Balances']);
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Checking', 'type' => 'asset', 'currency' => 'PEN', 'opening_balance' => '1000',
+    ])->assertRedirect();
+
+    $checking = Account::where('name', 'Checking')->sole();
+    expect($checking->balance())->toBe(100000)        // +S/1000 you have
+        ->and($equity->balance())->toBe(-100000)      // balanced against equity
+        ->and($this->user->netWorth())->toBe(100000);
+});
+
+it('seeds a liability opening balance as money owed', function () {
+    Account::factory()->equity()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Amex', 'type' => 'liability', 'currency' => 'PEN', 'opening_balance' => '500',
+    ])->assertRedirect();
+
+    $amex = Account::where('name', 'Amex')->sole();
+    expect($amex->balance())->toBe(-50000)            // stored negative (you owe)
+        ->and($this->user->netWorth())->toBe(-50000); // reduces net worth
+});
+
+it('seeds an FX opening balance using the supplied base value', function () {
+    Account::factory()->equity()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'USD Savings', 'type' => 'asset', 'currency' => 'USD',
+        'opening_balance' => '100', 'opening_balance_base' => '370',
+    ])->assertRedirect();
+
+    $savings = Account::where('name', 'USD Savings')->sole();
+    expect($savings->balance())->toBe(10000)          // native USD
+        ->and($savings->baseBalance())->toBe(37000)   // translated to PEN
+        ->and($this->user->netWorth())->toBe(37000);
+});
+
+it('requires a base value for an FX opening balance', function () {
+    Account::factory()->equity()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'USD Savings', 'type' => 'asset', 'currency' => 'USD', 'opening_balance' => '100',
+    ])->assertSessionHasErrors('opening_balance_base');
+
+    expect(Account::where('name', 'USD Savings')->exists())->toBeFalse();
+});
+
+it('creates an account with no transaction when no opening balance is given', function () {
+    Account::factory()->equity()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Checking', 'type' => 'asset', 'currency' => 'PEN',
+    ])->assertRedirect();
+
+    expect(Transaction::count())->toBe(0);
+});
