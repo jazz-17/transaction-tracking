@@ -3,6 +3,7 @@ export type User = {
     name: string;
     email: string;
     avatar?: string;
+    base_currency: string | null;
     email_verified_at: string | null;
     created_at: string;
     updated_at: string;
