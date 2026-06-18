@@ -43,7 +43,7 @@ class TransactionController extends Controller
             ->whereIn('type', [AccountType::Income->value, AccountType::Expense->value])
             ->where('archived', false)
             ->orderBy('name')
-            ->get(['id', 'name', 'type']);
+            ->get(['id', 'name', 'type', 'parent_id', 'is_group']);
 
         return Inertia::render('transactions/Index', [
             // Deferred: the list can grow unbounded, so the page shell (and the entry
@@ -281,16 +281,42 @@ class TransactionController extends Controller
     }
 
     /**
+     * Category options for the entry picker, nested one level (decision #13): each root
+     * group becomes a non-selectable header carrying its leaf children, and ungrouped
+     * leaves sit at the top level. Only leaves are postable, so a group exposes no id the
+     * form can submit. Childless groups are omitted — they'd offer nothing to pick.
+     *
      * @param  EloquentCollection<int, Account>  $categories
-     * @return list<array{id: int, name: string}>
+     * @return list<array{id: int, name: string, is_group: bool, children?: list<array{id: int, name: string, is_group: bool}>}>
      */
     private function categoryOptions(EloquentCollection $categories, AccountType $type): array
     {
-        return array_values(
-            $categories
-                ->where('type', $type)
-                ->map(fn (Account $account): array => ['id' => $account->id, 'name' => $account->name])
-                ->all()
-        );
+        $ofType = $categories->where('type', $type);
+        $childrenByParent = $ofType->whereNotNull('parent_id')->groupBy('parent_id');
+
+        $options = [];
+
+        // $ofType keeps the query's name ordering, so roots and their children stay sorted.
+        foreach ($ofType->whereNull('parent_id') as $account) {
+            if (! $account->isGroup()) {
+                $options[] = ['id' => $account->id, 'name' => $account->name, 'is_group' => false];
+
+                continue;
+            }
+
+            $children = array_values(
+                $childrenByParent->get($account->id, collect())
+                    ->map(fn (Account $child): array => ['id' => $child->id, 'name' => $child->name, 'is_group' => false])
+                    ->all()
+            );
+
+            if ($children === []) {
+                continue;
+            }
+
+            $options[] = ['id' => $account->id, 'name' => $account->name, 'is_group' => true, 'children' => $children];
+        }
+
+        return $options;
     }
 }

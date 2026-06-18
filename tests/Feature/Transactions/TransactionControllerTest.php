@@ -223,6 +223,25 @@ it('rejects posting to a group as the money account', function () {
     ])->assertSessionHasErrors('account_id');
 });
 
+it('nests expense categories under their group for the picker, omitting empty groups', function () {
+    $food = Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Food']);
+    Account::factory()->expense()->for($this->user)->create(['name' => 'Dining', 'parent_id' => $food->id]);
+    Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Empty Group']);
+
+    $this->get(route('transactions.index'))->assertInertia(fn (Assert $page) => $page
+        // Food (group) + Groceries (ungrouped leaf from beforeEach); the childless
+        // "Empty Group" is omitted. Top level is name-ordered, so Food precedes Groceries.
+        ->has('expenseCategories', 2)
+        ->where('expenseCategories.0.name', 'Food')
+        ->where('expenseCategories.0.is_group', true)
+        ->has('expenseCategories.0.children', 1)
+        ->where('expenseCategories.0.children.0.name', 'Dining')
+        ->where('expenseCategories.0.children.0.is_group', false)
+        ->where('expenseCategories.1.name', 'Groceries')
+        ->where('expenseCategories.1.is_group', false)
+    );
+});
+
 it('records normally against a leaf category nested under a group', function () {
     $food = Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Food']);
     $groceries = Account::factory()->expense()->for($this->user)->create(['name' => 'Groceries', 'parent_id' => $food->id]);

@@ -17,7 +17,9 @@ import { Label } from '@/components/ui/label';
 import {
     Select,
     SelectContent,
+    SelectGroup,
     SelectItem,
+    SelectLabel,
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
@@ -32,7 +34,14 @@ export type MoneyAccount = {
     currency: string;
 };
 
-export type CategoryOption = { id: number; name: string };
+// A category option is either a root group (a non-selectable header carrying leaf
+// children) or an ungrouped leaf. Only leaves are postable (decision #13).
+export type CategoryOption = {
+    id: number;
+    name: string;
+    is_group: boolean;
+    children?: CategoryOption[];
+};
 
 export type TransactionEdit = {
     kind: Kind;
@@ -274,13 +283,29 @@ function submit() {
                                 <SelectValue placeholder="Select a category" />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem
+                                <template
                                     v-for="category in categories"
                                     :key="category.id"
-                                    :value="category.id"
                                 >
-                                    {{ category.name }}
-                                </SelectItem>
+                                    <!-- Groups are headers, not options: only their leaf
+                                         children carry a selectable value. -->
+                                    <SelectGroup v-if="category.is_group">
+                                        <SelectLabel>{{
+                                            category.name
+                                        }}</SelectLabel>
+                                        <SelectItem
+                                            v-for="child in category.children"
+                                            :key="child.id"
+                                            :value="child.id"
+                                            class="pl-6"
+                                        >
+                                            {{ child.name }}
+                                        </SelectItem>
+                                    </SelectGroup>
+                                    <SelectItem v-else :value="category.id">
+                                        {{ category.name }}
+                                    </SelectItem>
+                                </template>
                             </SelectContent>
                         </Select>
                         <InputError :message="form.errors.category_id" />

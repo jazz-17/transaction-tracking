@@ -3,6 +3,7 @@ import { useForm } from '@inertiajs/vue3';
 import { computed, ref, watch } from 'vue';
 import InputError from '@/components/InputError.vue';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
     Dialog,
     DialogContent,
@@ -29,6 +30,8 @@ export type AccountRow = {
     type: string;
     currency: string;
     archived: boolean;
+    parent_id: number | null;
+    is_group: boolean;
 };
 
 const props = defineProps<{
@@ -36,6 +39,12 @@ const props = defineProps<{
     currencies: Array<{ code: string; name: string }>;
     baseCurrency: string;
     account?: AccountRow | null;
+    // Candidate parent groups (same shape as rows); the dialog filters them by the
+    // selected type. Only passed for categories — My-Account grouping is deferred.
+    groups?: AccountRow[];
+    // Preset parent for the "Add subcategory under …" action: forces a leaf nested
+    // under this group, with the type fixed to match.
+    parent?: AccountRow | null;
 }>();
 
 const open = ref(false);
@@ -52,9 +61,42 @@ const typeOptions =
           ];
 
 const isEditing = computed(() => !!props.account);
-const needsCurrency = computed(
-    () => form.type === 'asset' || form.type === 'liability',
+// "Add subcategory under …": a fixed-parent create that always yields a leaf.
+const presetParent = computed(() =>
+    !isEditing.value ? (props.parent ?? null) : null,
 );
+const isCategoryForm = computed(() => props.group === 'category');
+// A group holds no money, so it never carries a currency. Groups are categories-only
+// in this scope; the `!form.is_group` guard keeps it correct if that widens later.
+const needsCurrency = computed(
+    () =>
+        (form.type === 'asset' || form.type === 'liability') && !form.is_group,
+);
+// The group flag is immutable, so it's offered only when creating a fresh category
+// (never when editing, never when adding a subcategory — those are always leaves).
+const canToggleGroup = computed(
+    () => isCategoryForm.value && !isEditing.value && !presetParent.value,
+);
+const showTypeSelect = computed(() => !isEditing.value && !presetParent.value);
+// A leaf category may sit under a same-type root group. Hidden for groups (roots) and
+// for the fixed-parent subcategory flow.
+const showParent = computed(
+    () => isCategoryForm.value && !form.is_group && !presetParent.value,
+);
+const parentOptions = computed(() =>
+    (props.groups ?? []).filter((candidate) => candidate.type === form.type),
+);
+const dialogTitle = computed(() => {
+    if (isEditing.value) {
+        return 'Edit';
+    }
+
+    if (presetParent.value) {
+        return `New subcategory in ${presetParent.value.name}`;
+    }
+
+    return props.group === 'account' ? 'New account' : 'New category';
+});
 // An opening balance can be seeded only on creation of a My Account; its base value
 // is needed when the account currency differs from base.
 const showOpeningBalance = computed(
@@ -73,9 +115,19 @@ const form = useForm({
     // Default to the user's base currency so most accounts need no manual pick;
     // still changeable for a foreign card.
     currency: props.baseCurrency,
+    parent_id: null as number | null,
+    is_group: false,
     archived: false,
     opening_balance: '',
     opening_balance_base: '',
+});
+
+// The Select can't bind null cleanly, so route the "no parent" choice through a sentinel.
+const parentModel = computed({
+    get: () => (form.parent_id == null ? 'none' : String(form.parent_id)),
+    set: (value: string) => {
+        form.parent_id = value === 'none' ? null : Number(value);
+    },
 });
 
 watch(open, (isOpen) => {
@@ -85,11 +137,36 @@ watch(open, (isOpen) => {
 
     form.clearErrors();
     form.name = props.account?.name ?? '';
-    form.type = props.account?.type ?? typeOptions[0].value;
+    form.type =
+        props.parent?.type ?? props.account?.type ?? typeOptions[0].value;
     form.currency = props.account?.currency ?? props.baseCurrency;
+    form.parent_id = props.account?.parent_id ?? props.parent?.id ?? null;
+    form.is_group = props.account?.is_group ?? false;
     form.archived = props.account?.archived ?? false;
     form.opening_balance = '';
     form.opening_balance_base = '';
+});
+
+// A group is a root, so turning the flag on drops any chosen parent.
+watch(
+    () => form.is_group,
+    (isGroup) => {
+        if (isGroup) {
+            form.parent_id = null;
+        }
+    },
+);
+
+// Changing the type can strand a parent of the old type; clear it once it no longer
+// appears among the valid options (the fixed-parent flow keeps its preset).
+watch(parentOptions, (options) => {
+    if (
+        !presetParent.value &&
+        form.parent_id != null &&
+        !options.some((option) => option.id === form.parent_id)
+    ) {
+        form.parent_id = null;
+    }
 });
 
 function submit() {
@@ -120,15 +197,7 @@ function submit() {
         <DialogContent>
             <form class="space-y-5" @submit.prevent="submit">
                 <DialogHeader>
-                    <DialogTitle>
-                        {{
-                            isEditing
-                                ? 'Edit'
-                                : group === 'account'
-                                  ? 'New account'
-                                  : 'New category'
-                        }}
-                    </DialogTitle>
+                    <DialogTitle>{{ dialogTitle }}</DialogTitle>
                     <DialogDescription>
                         {{
                             group === 'account'
@@ -144,7 +213,7 @@ function submit() {
                     <InputError :message="form.errors.name" />
                 </div>
 
-                <div v-if="!isEditing" class="grid gap-2">
+                <div v-if="showTypeSelect" class="grid gap-2">
                     <Label>Type</Label>
                     <Select v-model="form.type">
                         <SelectTrigger class="w-full">
@@ -161,6 +230,51 @@ function submit() {
                         </SelectContent>
                     </Select>
                     <InputError :message="form.errors.type" />
+                </div>
+
+                <label
+                    v-if="canToggleGroup"
+                    class="flex items-start gap-3 rounded-lg border border-sidebar-border/70 px-4 py-3 dark:border-sidebar-border"
+                >
+                    <Checkbox
+                        :model-value="form.is_group"
+                        class="mt-0.5"
+                        @update:model-value="
+                            (checked) => (form.is_group = checked === true)
+                        "
+                    />
+                    <span class="grid gap-0.5">
+                        <span class="text-sm font-medium">Group</span>
+                        <span class="text-xs text-muted-foreground">
+                            A non-spendable header that totals its
+                            subcategories.
+                        </span>
+                    </span>
+                </label>
+
+                <div v-if="showParent" class="grid gap-2">
+                    <Label>
+                        Parent group
+                        <span class="text-muted-foreground">(optional)</span>
+                    </Label>
+                    <Select v-model="parentModel">
+                        <SelectTrigger class="w-full">
+                            <SelectValue placeholder="None — top level" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="none"
+                                >None — top level</SelectItem
+                            >
+                            <SelectItem
+                                v-for="parentGroup in parentOptions"
+                                :key="parentGroup.id"
+                                :value="String(parentGroup.id)"
+                            >
+                                {{ parentGroup.name }}
+                            </SelectItem>
+                        </SelectContent>
+                    </Select>
+                    <InputError :message="form.errors.parent_id" />
                 </div>
 
                 <div v-if="!isEditing && needsCurrency" class="grid gap-2">

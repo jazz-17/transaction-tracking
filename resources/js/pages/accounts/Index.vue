@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { Head, router } from '@inertiajs/vue3';
-import { Archive, ArchiveRestore, Pencil, Plus, Trash2 } from '@lucide/vue';
+import {
+    Archive,
+    ArchiveRestore,
+    ChevronDown,
+    ChevronRight,
+    Pencil,
+    Plus,
+    Trash2,
+} from '@lucide/vue';
+import { computed, ref } from 'vue';
 import { toast } from 'vue-sonner';
 import AccountFormDialog from '@/components/AccountFormDialog.vue';
 import type { AccountRow } from '@/components/AccountFormDialog.vue';
@@ -13,12 +22,45 @@ type AccountRowVm = AccountRow & {
     balance_display: string;
 };
 
-defineProps<{
+type CategoryNode = AccountRowVm & { children: AccountRowVm[] };
+
+const props = defineProps<{
     myAccounts: AccountRowVm[];
     categories: AccountRowVm[];
     currencies: Array<{ code: string; name: string }>;
     baseCurrency: string;
 }>();
+
+// Categories arrive flat (name-ordered); nest each root group's children beneath it.
+const categoryTree = computed<CategoryNode[]>(() =>
+    props.categories
+        .filter((category) => category.parent_id === null)
+        .map((root) => ({
+            ...root,
+            children: root.is_group
+                ? props.categories.filter(
+                      (category) => category.parent_id === root.id,
+                  )
+                : [],
+        })),
+);
+
+// Root groups offered as parents in the create/edit dialog.
+const groupOptions = computed(() =>
+    props.categories.filter(
+        (category) => category.is_group && category.parent_id === null,
+    ),
+);
+
+const collapsedGroups = ref(new Set<number>());
+
+function toggleCollapsed(id: number) {
+    if (collapsedGroups.value.has(id)) {
+        collapsedGroups.value.delete(id);
+    } else {
+        collapsedGroups.value.add(id);
+    }
+}
 
 defineOptions({
     layout: {
@@ -136,6 +178,7 @@ function remove(account: AccountRowVm) {
                     group="category"
                     :currencies="currencies"
                     :base-currency="baseCurrency"
+                    :groups="groupOptions"
                 >
                     <Button size="sm">
                         <Plus class="size-4" /> New category
@@ -149,54 +192,231 @@ function remove(account: AccountRowVm) {
                 >
                     No categories yet.
                 </p>
-                <div
-                    v-for="category in categories"
-                    :key="category.id"
-                    class="flex items-center justify-between gap-3 rounded-lg border border-sidebar-border/70 px-4 py-3 dark:border-sidebar-border"
-                    :class="{ 'opacity-50': category.archived }"
-                >
-                    <div class="flex items-center gap-2">
-                        <span class="font-medium">{{ category.name }}</span>
-                        <Badge variant="outline">{{
-                            category.type === 'income' ? 'Income' : 'Expense'
-                        }}</Badge>
-                        <Badge v-if="category.archived" variant="secondary"
-                            >Archived</Badge
+
+                <template v-for="node in categoryTree" :key="node.id">
+                    <!-- Group: a header that totals its children, with nested rows. -->
+                    <div v-if="node.is_group" class="flex flex-col">
+                        <div
+                            class="flex items-center justify-between gap-3 rounded-lg border border-sidebar-border/70 px-3 py-3 dark:border-sidebar-border"
+                            :class="{ 'opacity-50': node.archived }"
                         >
+                            <div class="flex min-w-0 items-center gap-2">
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    class="size-6 shrink-0"
+                                    :title="
+                                        collapsedGroups.has(node.id)
+                                            ? 'Expand'
+                                            : 'Collapse'
+                                    "
+                                    @click="toggleCollapsed(node.id)"
+                                >
+                                    <ChevronRight
+                                        v-if="collapsedGroups.has(node.id)"
+                                        class="size-4"
+                                    />
+                                    <ChevronDown v-else class="size-4" />
+                                </Button>
+                                <span class="truncate font-medium">{{
+                                    node.name
+                                }}</span>
+                                <Badge variant="secondary">Group</Badge>
+                                <Badge v-if="node.archived" variant="secondary"
+                                    >Archived</Badge
+                                >
+                            </div>
+                            <div class="flex items-center gap-1">
+                                <span class="mr-2 tabular-nums">{{
+                                    node.balance_display
+                                }}</span>
+                                <AccountFormDialog
+                                    group="category"
+                                    :currencies="currencies"
+                                    :base-currency="baseCurrency"
+                                    :parent="node"
+                                >
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        title="Add subcategory"
+                                    >
+                                        <Plus class="size-4" />
+                                    </Button>
+                                </AccountFormDialog>
+                                <AccountFormDialog
+                                    group="category"
+                                    :currencies="currencies"
+                                    :base-currency="baseCurrency"
+                                    :groups="groupOptions"
+                                    :account="node"
+                                >
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        title="Edit"
+                                    >
+                                        <Pencil class="size-4" />
+                                    </Button>
+                                </AccountFormDialog>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    :title="
+                                        node.archived ? 'Unarchive' : 'Archive'
+                                    "
+                                    @click="toggleArchive(node)"
+                                >
+                                    <ArchiveRestore
+                                        v-if="node.archived"
+                                        class="size-4"
+                                    />
+                                    <Archive v-else class="size-4" />
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    title="Delete"
+                                    @click="remove(node)"
+                                >
+                                    <Trash2 class="size-4" />
+                                </Button>
+                            </div>
+                        </div>
+
+                        <div
+                            v-show="!collapsedGroups.has(node.id)"
+                            class="mt-2 flex flex-col gap-2 pl-6"
+                        >
+                            <p
+                                v-if="node.children.length === 0"
+                                class="px-4 py-2 text-sm text-muted-foreground"
+                            >
+                                No subcategories yet.
+                            </p>
+                            <div
+                                v-for="child in node.children"
+                                :key="child.id"
+                                class="flex items-center justify-between gap-3 rounded-lg border border-sidebar-border/70 px-4 py-3 dark:border-sidebar-border"
+                                :class="{ 'opacity-50': child.archived }"
+                            >
+                                <div class="flex min-w-0 items-center gap-2">
+                                    <span class="truncate font-medium">{{
+                                        child.name
+                                    }}</span>
+                                    <Badge
+                                        v-if="child.archived"
+                                        variant="secondary"
+                                        >Archived</Badge
+                                    >
+                                </div>
+                                <div class="flex items-center gap-1">
+                                    <span class="mr-2 tabular-nums">{{
+                                        child.balance_display
+                                    }}</span>
+                                    <AccountFormDialog
+                                        group="category"
+                                        :currencies="currencies"
+                                        :base-currency="baseCurrency"
+                                        :groups="groupOptions"
+                                        :account="child"
+                                    >
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            title="Edit"
+                                        >
+                                            <Pencil class="size-4" />
+                                        </Button>
+                                    </AccountFormDialog>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        :title="
+                                            child.archived
+                                                ? 'Unarchive'
+                                                : 'Archive'
+                                        "
+                                        @click="toggleArchive(child)"
+                                    >
+                                        <ArchiveRestore
+                                            v-if="child.archived"
+                                            class="size-4"
+                                        />
+                                        <Archive v-else class="size-4" />
+                                    </Button>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        title="Delete"
+                                        @click="remove(child)"
+                                    >
+                                        <Trash2 class="size-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="flex items-center gap-1">
-                        <AccountFormDialog
-                            group="category"
-                            :currencies="currencies"
-                            :base-currency="baseCurrency"
-                            :account="category"
-                        >
-                            <Button variant="ghost" size="icon" title="Edit">
-                                <Pencil class="size-4" />
+
+                    <!-- Ungrouped leaf category. -->
+                    <div
+                        v-else
+                        class="flex items-center justify-between gap-3 rounded-lg border border-sidebar-border/70 px-4 py-3 dark:border-sidebar-border"
+                        :class="{ 'opacity-50': node.archived }"
+                    >
+                        <div class="flex min-w-0 items-center gap-2">
+                            <span class="truncate font-medium">{{
+                                node.name
+                            }}</span>
+                            <Badge variant="outline">{{
+                                node.type === 'income' ? 'Income' : 'Expense'
+                            }}</Badge>
+                            <Badge v-if="node.archived" variant="secondary"
+                                >Archived</Badge
+                            >
+                        </div>
+                        <div class="flex items-center gap-1">
+                            <span class="mr-2 tabular-nums">{{
+                                node.balance_display
+                            }}</span>
+                            <AccountFormDialog
+                                group="category"
+                                :currencies="currencies"
+                                :base-currency="baseCurrency"
+                                :groups="groupOptions"
+                                :account="node"
+                            >
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    title="Edit"
+                                >
+                                    <Pencil class="size-4" />
+                                </Button>
+                            </AccountFormDialog>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                :title="node.archived ? 'Unarchive' : 'Archive'"
+                                @click="toggleArchive(node)"
+                            >
+                                <ArchiveRestore
+                                    v-if="node.archived"
+                                    class="size-4"
+                                />
+                                <Archive v-else class="size-4" />
                             </Button>
-                        </AccountFormDialog>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            :title="category.archived ? 'Unarchive' : 'Archive'"
-                            @click="toggleArchive(category)"
-                        >
-                            <ArchiveRestore
-                                v-if="category.archived"
-                                class="size-4"
-                            />
-                            <Archive v-else class="size-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            title="Delete"
-                            @click="remove(category)"
-                        >
-                            <Trash2 class="size-4" />
-                        </Button>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                title="Delete"
+                                @click="remove(node)"
+                            >
+                                <Trash2 class="size-4" />
+                            </Button>
+                        </div>
                     </div>
-                </div>
+                </template>
             </CardContent>
         </Card>
     </div>
