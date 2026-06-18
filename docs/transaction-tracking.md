@@ -47,6 +47,7 @@ These were resolved during design review. Each is load-bearing — changing one 
 | 10 | **`ProvisionNewUserLedger` action** seeds at onboarding: hidden `equity` "Opening Balances" account (always), a curated default category set, and a starter "Cash" asset account. | The first expense must be recordable in seconds — it needs a category and an account to exist. A dedicated action (not `DatabaseSeeder`) is testable and reusable. |
 | 11 | **FX input = two amounts** (foreign + base), implied rate read-only. Surfaced only when account currency ≠ base. Manual in v1. | Matches what the user observes (foreign price now, base charge from statement). No FX feed dependency. Cross-currency transfers reuse the same mechanic. |
 | 12 | **v1 UI = core single-loop + flat lists + 2-line entry.** Splits (N-line) & hierarchy live in service/schema/tests but **no UI** yet. "Later features" out. | Model/service stay fully general so nothing retrofits; UI stays minimal for the first cut. |
+| 13 | **Category hierarchy = leaf-only posting, 2-level, base only.** Parents are non-postable `is_group` headers; only leaves carry postings. A leaf's `parent_id` must be an owned, same-`type`, **root** group. Reads roll up subtree-wise (depth-agnostic); writes cap at 2 levels. **Categories first**; My-Account groups deferred. | Groups give summaries without losing leaf granularity; leaf-only keeps rollups unambiguous and posting currency well-defined. Capping depth keeps the picker and cycle-safety trivial while the schema stays general (deeper later = one rule change, no migration). |
 
 ---
 
@@ -66,7 +67,8 @@ Both cards/wallets and categories, distinguished by `type`.
 | `id`, `user_id`, `name` | |
 | `type` | `asset` · `liability` · `income` · `expense` · `equity` |
 | `currency` | non-null **only** for `asset`/`liability` (their native currency); **null** for `income`/`expense`/`equity` → always base (Model A) |
-| `parent_id` | nullable; hierarchy column present in v1, **flat UI** for now (decision #12) |
+| `parent_id` | nullable; a leaf's parent must be a same-`type`, **root** `is_group` account (decision #13). Categories use it in v1; My Accounts deferred |
+| `is_group` | non-postable grouping header that rolls up its children; carries no postings and `null` currency; immutable after creation (decision #13) |
 | `icon`, `color`, `archived` | UI metadata; archived = hidden from pickers, still counted in history |
 
 **Account types**
@@ -177,6 +179,11 @@ ships with Pest tests and ends Pint- and Larastan-clean.
 ### Phase 4 — Polish & hardening
 - Empty states + skeletons (deferred props), validation messaging, opening-balance UI flow, consistent display-sign formatting, final Larastan/Pint pass.
 
+### Phase 5 — Category hierarchy (leaf-only, 2-level)
+Built bottom-up like the rest: constraints + rollups before any UI (decision #13).
+- **5a (no UI):** `is_group` column; constrain `parent_id` (owned, same-`type`, root group; groups are parentless and currency-less); leaf-only posting rule in the transaction request (a transaction can never reference a group); subtree rollup balances (depth-agnostic); group create/update/delete rules (skip the opening-balance seed; block deleting a non-empty group). Tests for every constraint + rollup. Closes the underconstrained-`parent_id` gap.
+- **5b (UI):** tree-rendered category list with rolled-up balances + add-group / add-subcategory; group toggle & parent picker in the account form; entry picker grouped with parent headers disabled; Pest browser smoke tests.
+
 ---
 
 ## 8. Later features (hang off this model cleanly)
@@ -186,6 +193,6 @@ ships with Pest tests and ends Pint- and Larastan-clean.
 - Reports & charts (spending by category, net worth over time)
 - CSV / bank import
 - Reconciliation (cleared/pending status on transactions)
-- Split & hierarchy **UI** (model already supports both)
+- Split (N-line) **UI**, and hierarchy for **My Accounts** (category hierarchy ships in Phase 5; model already supports both)
 - Explicit per-transaction FX rate + changeable base currency
 - Append-only audit log
