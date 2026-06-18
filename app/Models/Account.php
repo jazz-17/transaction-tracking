@@ -19,13 +19,14 @@ use Illuminate\Support\Carbon;
  * @property AccountType $type
  * @property string|null $currency
  * @property int|null $parent_id
+ * @property bool $is_group
  * @property string|null $icon
  * @property string|null $color
  * @property bool $archived
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
-#[Fillable(['name', 'type', 'currency', 'parent_id', 'icon', 'color', 'archived'])]
+#[Fillable(['name', 'type', 'currency', 'parent_id', 'is_group', 'icon', 'color', 'archived'])]
 class Account extends Model
 {
     /** @use HasFactory<AccountFactory> */
@@ -38,8 +39,18 @@ class Account extends Model
     {
         return [
             'type' => AccountType::class,
+            'is_group' => 'boolean',
             'archived' => 'boolean',
         ];
+    }
+
+    /**
+     * A group is a non-postable header (decision #13): it carries no postings of its
+     * own and its balance is the rolled-up sum of its children.
+     */
+    public function isGroup(): bool
+    {
+        return $this->is_group;
     }
 
     /**

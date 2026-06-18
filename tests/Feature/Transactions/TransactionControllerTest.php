@@ -48,6 +48,16 @@ it('records a single-currency expense end to end', function () {
         ->and($this->groceries->balance())->toBe(5000);
 });
 
+it('rejects an amount more precise than the account currency allows', function () {
+    // Visa is PEN (2 decimals); 50.123 would otherwise be silently rounded.
+    $this->post(route('transactions.store'), [
+        'kind' => 'expense', 'date' => '2026-06-17',
+        'account_id' => $this->visa->id, 'category_id' => $this->groceries->id, 'amount' => '50.123',
+    ])->assertSessionHasErrors('amount');
+
+    expect(Transaction::count())->toBe(0);
+});
+
 it('records an income end to end', function () {
     $this->post(route('transactions.store'), [
         'kind' => 'income', 'date' => '2026-06-17',
@@ -191,6 +201,39 @@ it('rejects posting to another user\'s account', function () {
     ])->assertSessionHasErrors('category_id');
 
     expect(Transaction::count())->toBe(0);
+});
+
+it('rejects posting to a group as the category', function () {
+    $foodGroup = Account::factory()->expense()->group()->for($this->user)->create();
+
+    $this->post(route('transactions.store'), [
+        'kind' => 'expense', 'date' => '2026-06-17',
+        'account_id' => $this->visa->id, 'category_id' => $foodGroup->id, 'amount' => '50',
+    ])->assertSessionHasErrors('category_id');
+
+    expect(Transaction::count())->toBe(0);
+});
+
+it('rejects posting to a group as the money account', function () {
+    $assetGroup = Account::factory()->asset('PEN')->group()->for($this->user)->create();
+
+    $this->post(route('transactions.store'), [
+        'kind' => 'expense', 'date' => '2026-06-17',
+        'account_id' => $assetGroup->id, 'category_id' => $this->groceries->id, 'amount' => '50',
+    ])->assertSessionHasErrors('account_id');
+});
+
+it('records normally against a leaf category nested under a group', function () {
+    $food = Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Food']);
+    $groceries = Account::factory()->expense()->for($this->user)->create(['name' => 'Groceries', 'parent_id' => $food->id]);
+
+    $this->post(route('transactions.store'), [
+        'kind' => 'expense', 'date' => '2026-06-17',
+        'account_id' => $this->visa->id, 'category_id' => $groceries->id, 'amount' => '50',
+    ])->assertRedirect();
+
+    expect($groceries->balance())->toBe(5000)
+        ->and($this->visa->balance())->toBe(-5000);
 });
 
 it('cannot edit or delete another user\'s transaction', function () {

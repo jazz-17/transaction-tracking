@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use Brick\Math\Exception\NumberFormatException;
+use Brick\Math\Exception\RoundingNecessaryException;
 use Brick\Math\RoundingMode;
 use Brick\Money\Currency;
 use Brick\Money\Exception\UnknownCurrencyException;
@@ -34,16 +36,42 @@ final readonly class Money
     /**
      * Parse a human-entered amount (e.g. "50", "50.5") into minor units for the currency.
      *
+     * Rounding is deliberately disallowed: an amount with more fractional digits than the
+     * currency supports throws rather than silently rounding (dangerous for a ledger).
+     * Callers validate scale at the request boundary; this is the structural backstop.
+     *
      * @throws UnknownCurrencyException
+     * @throws RoundingNecessaryException
      */
     public static function parse(string|int|float $amount, string $currency): self
     {
-        $brick = BrickMoney::of((string) $amount, strtoupper($currency), roundingMode: RoundingMode::HalfUp);
+        $brick = BrickMoney::of((string) $amount, strtoupper($currency), roundingMode: RoundingMode::Unnecessary);
 
         return new self(
             $brick->getMinorAmount()->toInt(),
             $brick->getCurrency()->getCurrencyCode(),
         );
+    }
+
+    /**
+     * Whether a human-entered amount fits the currency's scale exactly — no more
+     * fractional digits than the currency allows (USD≤2, JPY=0, KWD≤3). Harmless
+     * trailing zeros are fine ("12.30" for USD); only genuine precision loss fails.
+     * Used to reject over-precise input before parse() would have to refuse it.
+     */
+    public static function isValidScale(string|int|float $amount, string $currency): bool
+    {
+        try {
+            BrickMoney::of((string) $amount, strtoupper($currency), roundingMode: RoundingMode::Unnecessary);
+
+            return true;
+        } catch (RoundingNecessaryException) {
+            return false;
+        } catch (UnknownCurrencyException|NumberFormatException) {
+            // Currency validity and numeric format are asserted by other rules; a bad
+            // value here simply isn't ours to reject, so don't flag it on scale.
+            return true;
+        }
     }
 
     /**

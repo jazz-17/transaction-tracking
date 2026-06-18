@@ -75,6 +75,21 @@ it('records a transfer between own accounts without touching a category', functi
         ->and($this->groceries->balance())->toBe(0);
 });
 
+it('records against a leaf category nested under a group', function () {
+    // The hierarchy columns (parent_id/is_group) are inert to the ledger: a leaf with a
+    // parent posts exactly like a flat one.
+    $food = Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Food']);
+    $groceries = Account::factory()->expense()->for($this->user)->create(['name' => 'Sub Groceries', 'parent_id' => $food->id]);
+
+    $txn = $this->record->create($this->user, TransactionKind::Expense, '2026-06-17', [
+        new PostingInput($this->visa->id, -5000, 'PEN', -5000),
+        new PostingInput($groceries->id, 5000, 'PEN', 5000),
+    ]);
+
+    expect($txn->isBalanced())->toBeTrue()
+        ->and($groceries->balance())->toBe(5000);
+});
+
 it('records an N-line split in one balanced transaction', function () {
     $txn = $this->record->create(
         $this->user,

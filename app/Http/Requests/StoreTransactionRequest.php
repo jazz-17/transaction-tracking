@@ -5,6 +5,7 @@ namespace App\Http\Requests;
 use App\Enums\AccountType;
 use App\Enums\TransactionKind;
 use App\Models\Account;
+use App\Support\Money;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
@@ -85,6 +86,10 @@ class StoreTransactionRequest extends FormRequest
                         $validator->errors()->add('base_amount', "Enter the value of this transfer in {$base}.");
                     }
 
+                    $this->assertScale($validator, 'amount', (string) $from->currency);
+                    $this->assertScale($validator, 'to_amount', (string) $to->currency);
+                    $this->assertScale($validator, 'base_amount', $base);
+
                     return;
                 }
 
@@ -93,8 +98,25 @@ class StoreTransactionRequest extends FormRequest
                 if ($money->currency !== $base && ! $this->filled('base_amount')) {
                     $validator->errors()->add('base_amount', "Enter the amount in {$base} that was charged.");
                 }
+
+                $this->assertScale($validator, 'amount', (string) $money->currency);
+                $this->assertScale($validator, 'base_amount', $base);
             },
         ];
+    }
+
+    /**
+     * Reject an amount with more fractional digits than its currency supports, rather than
+     * letting Money::parse refuse it later (USD≤2, JPY=0, KWD≤3).
+     */
+    private function assertScale(Validator $validator, string $field, string $currency): void
+    {
+        if (! $this->filled($field) || Money::isValidScale((string) $this->input($field), $currency)) {
+            return;
+        }
+
+        $max = Money::fractionDigits($currency);
+        $validator->errors()->add($field, "This amount may have at most {$max} decimal place(s) for {$currency}.");
     }
 
     /**
@@ -108,7 +130,12 @@ class StoreTransactionRequest extends FormRequest
     {
         return Rule::exists('accounts', 'id')
             ->where('user_id', $userId)
-            ->whereIn('type', $types);
+            ->whereIn('type', $types)
+            // Groups are non-postable headers (decision #13): excluding them here is the
+            // server-side leaf-only guarantee, mirroring how equity is excluded by type.
+            // Integer 0, not boolean false: the Exists rule string-casts where values, and
+            // (string) false is '' — which matches no row — whereas '0' matches correctly.
+            ->where('is_group', 0);
     }
 
     private function account(int $id): Account

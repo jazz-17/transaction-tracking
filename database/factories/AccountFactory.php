@@ -25,6 +25,7 @@ class AccountFactory extends Factory
             'type' => AccountType::Expense,
             'currency' => null,
             'parent_id' => null,
+            'is_group' => false,
             'archived' => false,
         ];
     }
@@ -57,5 +58,14 @@ class AccountFactory extends Factory
     public function archived(): static
     {
         return $this->state(fn () => ['archived' => true]);
+    }
+
+    /**
+     * A non-postable group header (decision #13). Combine with a type state, e.g.
+     * `Account::factory()->expense()->group()`.
+     */
+    public function group(): static
+    {
+        return $this->state(fn () => ['is_group' => true, 'currency' => null]);
     }
 }

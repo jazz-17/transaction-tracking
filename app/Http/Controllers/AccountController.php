@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Support\Currencies;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -34,8 +35,11 @@ class AccountController extends Controller
             ->where('type', '!=', AccountType::Equity->value)
             ->withSum('postings as balance_minor', 'amount')
             ->orderBy('name')
-            ->get()
-            ->map(fn (Account $account): array => $this->present($account, $base));
+            ->get();
+
+        $this->rollUpGroupBalances($accounts);
+
+        $accounts = $accounts->map(fn (Account $account): array => $this->present($account, $base));
 
         return Inertia::render('accounts/Index', [
             'myAccounts' => $accounts->whereIn('type', [
@@ -56,18 +60,29 @@ class AccountController extends Controller
         $data = $request->validated();
         $type = AccountType::from($data['type']);
 
-        $account = Account::create([
-            'name' => $data['name'],
-            'type' => $type,
-            'currency' => $type->usesNativeCurrency() ? strtoupper((string) $data['currency']) : null,
-            'parent_id' => $data['parent_id'] ?? null,
-            'icon' => $data['icon'] ?? null,
-            'color' => $data['color'] ?? null,
-        ]);
+        // The account and its opening-balance seed must land together: a failure during
+        // seeding (equity lookup, money parsing, balancing) rolls back the account too,
+        // so a balance-less account is never left behind.
+        DB::transaction(function () use ($request, $data, $type): void {
+            // A group is a non-postable header: it holds no money of its own, so it never
+            // carries a currency and never seeds an opening balance (decision #13).
+            $isGroup = (bool) ($data['is_group'] ?? false);
+            $usesNativeCurrency = ! $isGroup && $type->usesNativeCurrency();
 
-        if ($type->usesNativeCurrency()) {
-            $this->seedOpeningBalance($request->user(), $account, $data);
-        }
+            $account = Account::create([
+                'name' => $data['name'],
+                'type' => $type,
+                'currency' => $usesNativeCurrency ? strtoupper((string) $data['currency']) : null,
+                'parent_id' => $data['parent_id'] ?? null,
+                'is_group' => $isGroup,
+                'icon' => $data['icon'] ?? null,
+                'color' => $data['color'] ?? null,
+            ]);
+
+            if ($usesNativeCurrency) {
+                $this->seedOpeningBalance($request->user(), $account, $data);
+            }
+        });
 
         return back();
     }
@@ -84,6 +99,15 @@ class AccountController extends Controller
     public function destroy(Account $account): RedirectResponse
     {
         Gate::authorize('delete', $account);
+
+        // A non-empty group can't be deleted out from under its children — doing so would
+        // orphan them (or silently re-parent them to the root). Move or delete them first
+        // (decision #13). An empty group has no children and falls through to the leaf path.
+        if ($account->isGroup() && $account->children()->exists()) {
+            throw ValidationException::withMessages([
+                'account' => 'This group has subcategories. Move or delete them first.',
+            ]);
+        }
 
         // An account whose entire history is its own opening-balance seed — a transaction
         // that touches only this account and the hidden equity account — can be safely
@@ -176,9 +200,40 @@ class AccountController extends Controller
     }
 
     /**
+     * Roll each leaf's posting balance up into its ancestor groups (decision #13).
+     *
+     * Groups carry no postings of their own, so their `balance_minor` starts at 0 (from
+     * the `withSum`) and their reported balance is Σ over their subtree. The walk is
+     * depth-agnostic — each account's own balance is added to itself and every ancestor —
+     * so adding a deeper level later needs no change here. Write-time rules guarantee an
+     * acyclic 2-level tree, so the ancestor walk always terminates. Categories are
+     * base-denominated (native == base), so no FX translation is involved in this scope.
+     *
+     * @param  Collection<int, Account>  $accounts
+     */
+    private function rollUpGroupBalances(Collection $accounts): void
+    {
+        $byId = $accounts->keyBy('id');
+
+        $rolledUp = [];
+        foreach ($accounts as $account) {
+            $own = (int) $account->getAttribute('balance_minor');
+
+            for ($node = $account; $node !== null; $node = $byId->get($node->parent_id)) {
+                $rolledUp[$node->id] = ($rolledUp[$node->id] ?? 0) + $own;
+            }
+        }
+
+        foreach ($accounts as $account) {
+            $account->setAttribute('balance_minor', $rolledUp[$account->id] ?? 0);
+        }
+    }
+
+    /**
      * @return array{
      *     id: int, name: string, type: string, currency: string, archived: bool,
-     *     parent_id: int|null, icon: string|null, color: string|null, balance_display: string
+     *     parent_id: int|null, is_group: bool, icon: string|null, color: string|null,
+     *     balance_display: string
      * }
      */
     private function present(Account $account, string $base): array
@@ -195,6 +250,7 @@ class AccountController extends Controller
             'currency' => $currency,
             'archived' => $account->archived,
             'parent_id' => $account->parent_id,
+            'is_group' => $account->is_group,
             'icon' => $account->icon,
             'color' => $account->color,
             'balance_display' => Money::ofMinor($displayMinor, $currency)->format(),

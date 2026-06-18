@@ -1,6 +1,7 @@
 <?php
 
 use App\Support\Money;
+use Brick\Math\Exception\RoundingNecessaryException;
 use Brick\Money\Exception\UnknownCurrencyException;
 
 it('parses whole amounts into minor units per currency exponent', function (string $currency, string $input, int $expected) {
@@ -13,6 +14,22 @@ it('parses whole amounts into minor units per currency exponent', function (stri
     'KWD 3 digits' => ['KWD', '50', 50000],
     'KWD fine' => ['KWD', '1.234', 1234],
     'PEN base' => ['PEN', '50', 5000],
+]);
+
+it('refuses to round an amount more precise than the currency allows', function () {
+    Money::parse('12.345', 'USD'); // USD has 2 decimals — rounding is not silently applied
+})->throws(RoundingNecessaryException::class);
+
+it('reports whether an amount fits the currency scale', function (string $currency, string $amount, bool $valid) {
+    expect(Money::isValidScale($amount, $currency))->toBe($valid);
+})->with([
+    'USD two decimals ok' => ['USD', '12.34', true],
+    'USD trailing zeros ok' => ['USD', '12.30', true],
+    'USD three decimals rejected' => ['USD', '12.345', false],
+    'JPY whole ok' => ['JPY', '100', true],
+    'JPY any decimal rejected' => ['JPY', '100.5', false],
+    'KWD three decimals ok' => ['KWD', '1.234', true],
+    'KWD four decimals rejected' => ['KWD', '1.2345', false],
 ]);
 
 it('reports the fraction digits (exponent) for a currency', function () {

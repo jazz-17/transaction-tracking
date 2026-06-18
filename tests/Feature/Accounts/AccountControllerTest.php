@@ -1,10 +1,14 @@
 <?php
 
+use App\Actions\Transactions\PostingInput;
+use App\Actions\Transactions\RecordTransaction;
 use App\Enums\AccountType;
+use App\Enums\TransactionKind;
 use App\Models\Account;
 use App\Models\Posting;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Support\Money;
 use Inertia\Testing\AssertableInertia as Assert;
 
 beforeEach(function () {
@@ -186,6 +190,27 @@ it('creates an account with no transaction when no opening balance is given', fu
     expect(Transaction::count())->toBe(0);
 });
 
+it('rolls back the account when opening-balance seeding fails', function () {
+    // No equity account exists, so seedOpeningBalance's firstOrFail throws mid-seed. The
+    // account creation must roll back rather than leave a balance-less account behind.
+    $this->post(route('accounts.store'), [
+        'name' => 'Checking', 'type' => 'asset', 'currency' => 'PEN', 'opening_balance' => '1000',
+    ])->assertNotFound();
+
+    expect(Account::where('name', 'Checking')->exists())->toBeFalse();
+});
+
+it('rejects an opening balance more precise than the currency allows', function () {
+    Account::factory()->equity()->for($this->user)->create();
+
+    // PEN has 2 decimals; 12.345 would otherwise be silently rounded by Money::parse.
+    $this->post(route('accounts.store'), [
+        'name' => 'Checking', 'type' => 'asset', 'currency' => 'PEN', 'opening_balance' => '12.345',
+    ])->assertSessionHasErrors('opening_balance');
+
+    expect(Account::where('name', 'Checking')->exists())->toBeFalse();
+});
+
 it('accepts a zero opening balance as no starting balance', function () {
     Account::factory()->equity()->for($this->user)->create();
 
@@ -195,4 +220,126 @@ it('accepts a zero opening balance as no starting balance', function () {
 
     expect(Account::where('name', 'Visa')->exists())->toBeTrue()
         ->and(Transaction::count())->toBe(0);
+});
+
+// --- Category hierarchy (Phase 5, decision #13) -----------------------------------
+
+it('creates a category group with no currency', function () {
+    $this->post(route('accounts.store'), [
+        'name' => 'Food', 'type' => 'expense', 'is_group' => true,
+    ])->assertValid()->assertRedirect();
+
+    $group = Account::where('name', 'Food')->sole();
+    expect($group->is_group)->toBeTrue()
+        ->and($group->currency)->toBeNull()
+        ->and($group->parent_id)->toBeNull();
+});
+
+it('creates a leaf nested under a same-type root group', function () {
+    $food = Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Food']);
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Groceries', 'type' => 'expense', 'parent_id' => $food->id,
+    ])->assertValid()->assertRedirect();
+
+    expect(Account::where('name', 'Groceries')->sole()->parent_id)->toBe($food->id);
+});
+
+it('rejects a leaf whose parent is a different type', function () {
+    $incomeGroup = Account::factory()->income()->group()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Groceries', 'type' => 'expense', 'parent_id' => $incomeGroup->id,
+    ])->assertSessionHasErrors('parent_id');
+});
+
+it('rejects a leaf whose parent is itself a leaf, not a group', function () {
+    $leaf = Account::factory()->expense()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Groceries', 'type' => 'expense', 'parent_id' => $leaf->id,
+    ])->assertSessionHasErrors('parent_id');
+});
+
+it('rejects nesting under a non-root group, enforcing the 2-level cap', function () {
+    // A group with a parent can only exist via tampering — the write rules never make one.
+    // A leaf still may not nest under it: parents must be roots.
+    $root = Account::factory()->expense()->group()->for($this->user)->create();
+    $nested = Account::factory()->expense()->group()->for($this->user)->create(['parent_id' => $root->id]);
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Groceries', 'type' => 'expense', 'parent_id' => $nested->id,
+    ])->assertSessionHasErrors('parent_id');
+});
+
+it('rejects giving a group a parent', function () {
+    $root = Account::factory()->expense()->group()->for($this->user)->create();
+
+    $this->post(route('accounts.store'), [
+        'name' => 'Food', 'type' => 'expense', 'is_group' => true, 'parent_id' => $root->id,
+    ])->assertSessionHasErrors('parent_id');
+});
+
+it('ignores is_group on update because it is immutable', function () {
+    $leaf = Account::factory()->expense()->for($this->user)->create(['name' => 'Groceries']);
+
+    $this->put(route('accounts.update', $leaf), ['name' => 'Groceries', 'is_group' => true])->assertRedirect();
+
+    expect($leaf->refresh()->is_group)->toBeFalse();
+});
+
+it('re-homes a leaf under a same-type root group on update', function () {
+    $food = Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Food']);
+    $leaf = Account::factory()->expense()->for($this->user)->create(['name' => 'Groceries']);
+
+    $this->put(route('accounts.update', $leaf), ['name' => 'Groceries', 'parent_id' => $food->id])->assertRedirect();
+
+    expect($leaf->refresh()->parent_id)->toBe($food->id);
+});
+
+it('rejects re-homing a leaf under a different-type group on update', function () {
+    $incomeGroup = Account::factory()->income()->group()->for($this->user)->create();
+    $leaf = Account::factory()->expense()->for($this->user)->create(['name' => 'Groceries']);
+
+    $this->put(route('accounts.update', $leaf), ['name' => 'Groceries', 'parent_id' => $incomeGroup->id])
+        ->assertSessionHasErrors('parent_id');
+});
+
+it('blocks deleting a group that still has children', function () {
+    $food = Account::factory()->expense()->group()->for($this->user)->create();
+    Account::factory()->expense()->for($this->user)->create(['parent_id' => $food->id]);
+
+    $this->delete(route('accounts.destroy', $food))->assertSessionHasErrors('account');
+
+    expect(Account::find($food->id))->not->toBeNull();
+});
+
+it('deletes an empty group', function () {
+    $food = Account::factory()->expense()->group()->for($this->user)->create();
+
+    $this->delete(route('accounts.destroy', $food))->assertValid()->assertRedirect();
+
+    expect(Account::find($food->id))->toBeNull();
+});
+
+it('rolls a group balance up from its children', function () {
+    $food = Account::factory()->expense()->group()->for($this->user)->create(['name' => 'Food']);
+    $groceries = Account::factory()->expense()->for($this->user)->create(['name' => 'Groceries', 'parent_id' => $food->id]);
+    $coffee = Account::factory()->expense()->for($this->user)->create(['name' => 'Coffee', 'parent_id' => $food->id]);
+    $visa = Account::factory()->liability('PEN')->for($this->user)->create(['name' => 'Visa']);
+
+    app(RecordTransaction::class)->create($this->user, TransactionKind::Expense, '2026-06-17', [
+        new PostingInput($visa->id, -8000, 'PEN', -8000),
+        new PostingInput($groceries->id, 5000, 'PEN', 5000),
+        new PostingInput($coffee->id, 3000, 'PEN', 3000),
+    ]);
+
+    // Categories are ordered by name: Coffee(0), Food(1), Groceries(2).
+    $this->get(route('accounts.index'))->assertInertia(fn (Assert $page) => $page
+        ->where('categories.1.name', 'Food')
+        ->where('categories.1.is_group', true)
+        ->where('categories.1.balance_display', Money::ofMinor(8000, 'PEN')->format()) // 5000 + 3000
+        ->where('categories.0.balance_display', Money::ofMinor(3000, 'PEN')->format()) // Coffee
+        ->where('categories.2.balance_display', Money::ofMinor(5000, 'PEN')->format()) // Groceries
+    );
 });
