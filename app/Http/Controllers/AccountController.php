@@ -177,23 +177,20 @@ class AccountController extends Controller
         }
 
         $currency = (string) $account->currency;
-        $base = (string) $user->base_currency;
-
         $nativeMinor = Money::parse($data['opening_balance'], $currency)->minorUnits;
-        $baseMinor = $currency === $base
-            ? $nativeMinor
-            : Money::parse($data['opening_balance_base'], $base)->minorUnits;
 
         $sign = $account->type->displaySign();
         $equity = Account::query()->where('type', AccountType::Equity->value)->firstOrFail();
 
+        // Single-currency seed in the account's own currency: equity is multi-currency
+        // (decision #14), so a foreign opening balance needs no base value and no rate.
         $this->record->create(
             $user,
             TransactionKind::Transfer,
             now()->toDateString(),
             [
-                new PostingInput((int) $account->id, $sign * $nativeMinor, $currency, $sign * $baseMinor),
-                new PostingInput((int) $equity->id, -$sign * $baseMinor, $base, -$sign * $baseMinor),
+                new PostingInput((int) $account->id, $sign * $nativeMinor, $currency),
+                new PostingInput((int) $equity->id, -$sign * $nativeMinor, $currency),
             ],
             payee: 'Opening balance',
         );

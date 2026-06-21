@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\TransactionKind;
 use App\Exceptions\InvalidTransactionException;
 use App\Models\Concerns\BelongsToUser;
+use App\Support\Ledger\TransactionBalance;
 use Database\Factories\TransactionFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -48,14 +49,12 @@ class Transaction extends Model
     }
 
     /**
-     * Whether the persisted postings satisfy the ledger invariants
-     * (>= 2 postings and Σ base_amount = 0). Reads fresh from the database.
+     * Whether the persisted postings satisfy the conservation invariant (decision #16).
+     * Reads fresh from the database and runs the same check as the write path.
      */
     public function isBalanced(): bool
     {
-        $query = Posting::withoutGlobalScope('user')->where('transaction_id', $this->getKey());
-
-        return $query->count() >= 2 && (int) $query->sum('base_amount') === 0;
+        return TransactionBalance::isBalanced($this->baseCurrency(), $this->persistedLines());
     }
 
     /**
@@ -67,16 +66,31 @@ class Transaction extends Model
      */
     public function assertBalanced(): void
     {
-        $query = Posting::withoutGlobalScope('user')->where('transaction_id', $this->getKey());
+        TransactionBalance::assert($this->baseCurrency(), $this->persistedLines());
+    }
 
-        $count = $query->count();
-        if ($count < 2) {
-            throw InvalidTransactionException::tooFewPostings($count);
-        }
+    /**
+     * The owner's base currency — the one currency a cross-currency swap must include (decision #9/#16).
+     */
+    private function baseCurrency(): string
+    {
+        return (string) $this->user->base_currency;
+    }
 
-        $baseSum = (int) $query->sum('base_amount');
-        if ($baseSum !== 0) {
-            throw InvalidTransactionException::unbalanced($baseSum);
-        }
+    /**
+     * The persisted postings as bare lines for {@see TransactionBalance}.
+     *
+     * @return array<int, array{amount: int, currency: string}>
+     */
+    private function persistedLines(): array
+    {
+        return Posting::withoutGlobalScope('user')
+            ->where('transaction_id', $this->getKey())
+            ->get(['amount', 'currency'])
+            ->map(fn (Posting $posting): array => [
+                'amount' => (int) $posting->amount,
+                'currency' => $posting->currency,
+            ])
+            ->all();
     }
 }

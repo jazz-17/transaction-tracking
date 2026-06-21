@@ -65,16 +65,23 @@ class User extends Authenticatable
     }
 
     /**
-     * Net worth in base-currency minor units: Σ base_amount over asset + liability
-     * accounts (what you own minus what you owe). Assets carry value positive,
-     * liabilities negative, so a plain sum is net worth.
+     * Net worth as per-currency buckets (decision #15): Σ amount over asset + liability
+     * accounts, grouped by currency — e.g. `['PEN' => 95000, 'USD' => -30000]`. Assets
+     * carry value positive, liabilities negative, so a per-currency sum is net worth in
+     * that currency. Not blended into one base total — that needs revaluation (deferred).
+     *
+     * @return array<string, int>
      */
-    public function netWorth(): int
+    public function netWorth(): array
     {
-        return (int) DB::table('postings')
+        return DB::table('postings')
             ->join('accounts', 'accounts.id', '=', 'postings.account_id')
             ->where('postings.user_id', $this->getKey())
             ->whereIn('accounts.type', [AccountType::Asset->value, AccountType::Liability->value])
-            ->sum('postings.base_amount');
+            ->groupBy('postings.currency')
+            ->selectRaw('postings.currency as currency, SUM(postings.amount) as total')
+            ->pluck('total', 'currency')
+            ->map(fn (int|string $total): int => (int) $total)
+            ->all();
     }
 }

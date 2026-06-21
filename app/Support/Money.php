@@ -93,6 +93,22 @@ final readonly class Money
         return (string) BrickMoney::ofMinor($this->minorUnits, $this->currency)->getAmount();
     }
 
+    /**
+     * Derive the observed rate-to-base of an exchange from its two real amounts (decision
+     * #11): base units per 1 foreign unit, e.g. S/1,140 for $300 → "3.80000000". This is the
+     * `−B/F` recovery the deviation guard reads on demand — no rate is ever stored. Magnitude
+     * only — signs live on the postings. Fixed precision, never a float.
+     *
+     * @throws UnknownCurrencyException
+     */
+    public static function deriveRate(int $baseMinor, string $baseCurrency, int $foreignMinor, string $foreignCurrency): string
+    {
+        $base = BrickMoney::ofMinor(abs($baseMinor), strtoupper($baseCurrency))->getAmount();
+        $foreign = BrickMoney::ofMinor(abs($foreignMinor), strtoupper($foreignCurrency))->getAmount();
+
+        return (string) $base->dividedBy($foreign, 8, RoundingMode::HalfUp);
+    }
+
     public function isZero(): bool
     {
         return $this->minorUnits === 0;

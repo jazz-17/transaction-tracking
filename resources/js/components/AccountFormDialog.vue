@@ -97,16 +97,10 @@ const dialogTitle = computed(() => {
 
     return props.group === 'account' ? 'New account' : 'New category';
 });
-// An opening balance can be seeded only on creation of a My Account; its base value
-// is needed when the account currency differs from base.
+// An opening balance can be seeded only on creation of a My Account, entered in the
+// account's own currency (decision #14) — no base value, no rate.
 const showOpeningBalance = computed(
     () => !isEditing.value && needsCurrency.value,
-);
-const showOpeningBalanceBase = computed(
-    () =>
-        showOpeningBalance.value &&
-        !!form.currency &&
-        form.currency !== props.baseCurrency,
 );
 
 const form = useForm({
@@ -119,7 +113,6 @@ const form = useForm({
     is_group: false,
     archived: false,
     opening_balance: '',
-    opening_balance_base: '',
 });
 
 // The Select can't bind null cleanly, so route the "no parent" choice through a sentinel.
@@ -144,7 +137,6 @@ watch(open, (isOpen) => {
     form.is_group = props.account?.is_group ?? false;
     form.archived = props.account?.archived ?? false;
     form.opening_balance = '';
-    form.opening_balance_base = '';
 });
 
 // A group is a root, so turning the flag on drops any chosen parent.
@@ -299,7 +291,9 @@ function submit() {
                 <div v-if="showOpeningBalance" class="grid gap-2">
                     <Label for="opening-balance">
                         Opening balance
-                        <span class="text-muted-foreground">(optional)</span>
+                        <span class="text-muted-foreground"
+                            >in {{ form.currency }} (optional)</span
+                        >
                     </Label>
                     <Input
                         id="opening-balance"
@@ -315,21 +309,6 @@ function submit() {
                         "
                     />
                     <InputError :message="form.errors.opening_balance" />
-                </div>
-
-                <div v-if="showOpeningBalanceBase" class="grid gap-2">
-                    <Label for="opening-balance-base">
-                        Opening balance in {{ baseCurrency }}
-                    </Label>
-                    <Input
-                        id="opening-balance-base"
-                        v-model="form.opening_balance_base"
-                        type="number"
-                        step="any"
-                        min="0"
-                        inputmode="decimal"
-                    />
-                    <InputError :message="form.errors.opening_balance_base" />
                 </div>
 
                 <DialogFooter>

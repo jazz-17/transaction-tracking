@@ -32,17 +32,19 @@ test('the dashboard shows net worth and account balances', function () {
 
     // Seed S/1000 into checking, then spend S/50 on the Visa → net worth S/950.
     $record->create($user, TransactionKind::Transfer, '2026-06-01', [
-        new PostingInput($checking->id, 100000, 'PEN', 100000),
-        new PostingInput($opening->id, -100000, 'PEN', -100000),
+        new PostingInput($checking->id, 100000, 'PEN'),
+        new PostingInput($opening->id, -100000, 'PEN'),
     ]);
     $record->create($user, TransactionKind::Expense, '2026-06-05', [
-        new PostingInput($visa->id, -5000, 'PEN', -5000),
-        new PostingInput($groceries->id, 5000, 'PEN', 5000),
+        new PostingInput($visa->id, -5000, 'PEN'),
+        new PostingInput($groceries->id, 5000, 'PEN'),
     ]);
 
     $this->get(route('dashboard'))->assertInertia(fn (Assert $page) => $page
         ->component('Dashboard')
-        ->where('netWorthDisplay', "PEN\u{00A0}950.00")
+        ->has('netWorth', 1)
+        ->where('netWorth.0.currency', 'PEN')
+        ->where('netWorth.0.display', "PEN\u{00A0}950.00")
         ->has('assets', 1)
         ->has('liabilities', 1)
         ->where('assets.0.balance_display', "PEN\u{00A0}1,000.00")

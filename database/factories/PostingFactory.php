@@ -31,7 +31,6 @@ class PostingFactory extends Factory
             'user_id' => User::factory(),
             'amount' => $amount,
             'currency' => 'PEN',
-            'base_amount' => $amount,
             'memo' => null,
         ];
     }

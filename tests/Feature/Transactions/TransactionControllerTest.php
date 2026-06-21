@@ -79,29 +79,29 @@ it('records a same-currency transfer without touching a category', function () {
         ->and($this->groceries->balance())->toBe(0);
 });
 
-it('records an FX expense balanced in base currency', function () {
+it('records a foreign purchase natively in its own currency', function () {
     $this->post(route('transactions.store'), [
         'kind' => 'expense', 'date' => '2026-06-17',
         'account_id' => $this->amex->id, 'category_id' => $this->groceries->id,
-        'amount' => '100', 'base_amount' => '370',
+        'amount' => '100',
     ])->assertRedirect();
 
-    expect($this->amex->balance())->toBe(-10000)        // native USD owed
-        ->and($this->amex->baseBalance())->toBe(-37000) // translated to PEN
-        ->and($this->groceries->balance())->toBe(37000);
+    expect($this->amex->balance())->toBe(-10000)                       // native USD owed
+        ->and($this->groceries->balancesByCurrency())->toBe(['USD' => 10000]);
 });
 
-it('requires a base amount when the account currency differs from base', function () {
+it('accepts a foreign expense without any base amount', function () {
+    // The old "amount in base" requirement is gone (decision #11).
     $this->post(route('transactions.store'), [
         'kind' => 'expense', 'date' => '2026-06-17',
         'account_id' => $this->amex->id, 'category_id' => $this->groceries->id, 'amount' => '100',
-    ])->assertSessionHasErrors('base_amount');
+    ])->assertValid()->assertRedirect();
 
-    expect(Transaction::count())->toBe(0);
+    expect(Transaction::count())->toBe(1);
 });
 
-it('records a cross-currency transfer, deriving base from the base-currency leg', function () {
-    // Move S/370 out of PEN checking, $100 into the USD savings account.
+it('records a base→foreign transfer as a swap of the two observed amounts', function () {
+    // Move S/370 out of PEN checking, $100 into the USD savings account — two amounts, no rate.
     $this->post(route('transactions.store'), [
         'kind' => 'transfer', 'date' => '2026-06-17',
         'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
@@ -109,9 +109,33 @@ it('records a cross-currency transfer, deriving base from the base-currency leg'
     ])->assertRedirect();
 
     expect($this->checking->balance())->toBe(-37000)
-        ->and($this->savingsUsd->balance())->toBe(10000)     // native USD
-        ->and($this->savingsUsd->baseBalance())->toBe(37000) // PEN value
+        ->and($this->savingsUsd->balance())->toBe(10000)     // native USD applied
         ->and(Transaction::sole()->isBalanced())->toBeTrue();
+});
+
+it('records a foreign→base transfer (the reverse direction)', function () {
+    // Sell $100 from USD savings into PEN checking — the from-is-foreign branch (review gap J).
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->savingsUsd->id, 'to_account_id' => $this->checking->id,
+        'amount' => '100', 'to_amount' => '370',
+    ])->assertRedirect();
+
+    expect($this->savingsUsd->balance())->toBe(-10000)       // $100 left
+        ->and($this->checking->balance())->toBe(37000)       // S/370 arrived
+        ->and(Transaction::sole()->isBalanced())->toBeTrue();
+});
+
+it('rejects a cross-currency transfer that excludes base', function () {
+    $euro = Account::factory()->asset('EUR')->for($this->user)->create(['name' => 'Euro wallet']);
+
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->savingsUsd->id, 'to_account_id' => $euro->id,
+        'amount' => '100', 'to_amount' => '92',
+    ])->assertSessionHasErrors('to_account_id');
+
+    expect(Transaction::count())->toBe(0);
 });
 
 it('requires the received amount on a cross-currency transfer', function () {
@@ -119,6 +143,66 @@ it('requires the received amount on a cross-currency transfer', function () {
         'kind' => 'transfer', 'date' => '2026-06-17',
         'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id, 'amount' => '370',
     ])->assertSessionHasErrors('to_amount');
+});
+
+it('does not warn on the first exchange for a pair (it sets the baseline)', function () {
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '370', 'to_amount' => '100',
+    ])->assertRedirect()->assertSessionHasNoErrors();
+
+    expect(Transaction::count())->toBe(1);
+});
+
+it('warns and asks to confirm when an exchange rate deviates from the last', function () {
+    // Baseline: S/370 ↔ $100 (3.70).
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '370', 'to_amount' => '100',
+    ]);
+
+    // A 10× slip: S/3,700 ↔ $100 (37.0). Soft-blocked pending confirmation.
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-18',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '3700', 'to_amount' => '100',
+    ])->assertSessionHasErrors('confirm_rate');
+
+    expect(Transaction::count())->toBe(1); // only the baseline recorded
+});
+
+it('records a deviating exchange once the rate is confirmed', function () {
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '370', 'to_amount' => '100',
+    ]);
+
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-18',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '3700', 'to_amount' => '100', 'confirm_rate' => true,
+    ])->assertRedirect()->assertSessionHasNoErrors();
+
+    expect(Transaction::count())->toBe(2);
+});
+
+it('does not warn when the exchange rate is close to the last', function () {
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '370', 'to_amount' => '100',   // 3.70
+    ]);
+
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-18',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '385', 'to_amount' => '100',   // 3.85, within band
+    ])->assertRedirect()->assertSessionHasNoErrors();
+
+    expect(Transaction::count())->toBe(2);
 });
 
 it('exposes an edit payload that round-trips a single-currency expense', function () {
@@ -262,8 +346,8 @@ it('cannot edit or delete another user\'s transaction', function () {
     $theirTxn = app(RecordTransaction::class)->create(
         $theirUser, TransactionKind::Expense, '2026-06-17',
         [
-            new PostingInput($theirAccount->id, -5000, 'PEN', -5000),
-            new PostingInput($theirCategory->id, 5000, 'PEN', 5000),
+            new PostingInput($theirAccount->id, -5000, 'PEN'),
+            new PostingInput($theirCategory->id, 5000, 'PEN'),
         ],
     );
 

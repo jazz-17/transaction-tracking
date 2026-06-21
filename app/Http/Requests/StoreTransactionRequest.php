@@ -17,8 +17,9 @@ use Illuminate\Validation\Rules\Exists;
  * money accounts for a transfer). The controller turns it into balanced PostingInputs;
  * RecordTransaction remains the sole write path and re-checks ownership.
  *
- * The FX "second amount" fields are required only when currencies actually differ —
- * that condition needs the accounts' currencies, so it's enforced in {@see after()}.
+ * A cross-currency transfer's "destination amount" is required only when the two
+ * accounts' currencies differ — that condition needs the accounts, so it's enforced
+ * in {@see after()} (decision #16).
  */
 class StoreTransactionRequest extends FormRequest
 {
@@ -36,7 +37,8 @@ class StoreTransactionRequest extends FormRequest
             'payee' => ['nullable', 'string', 'max:255'],
             'memo' => ['nullable', 'string', 'max:1000'],
             'amount' => ['required', 'numeric', 'gt:0'],
-            'base_amount' => ['nullable', 'numeric', 'gt:0'],
+            // Set by the UI to acknowledge a deviation-guard warning and record anyway (decision #11).
+            'confirm_rate' => ['nullable', 'boolean'],
         ];
 
         if ($this->input('kind') === TransactionKind::Transfer->value) {
@@ -58,9 +60,9 @@ class StoreTransactionRequest extends FormRequest
     }
 
     /**
-     * Cross-field check for the FX two-amount fields, which depend on the selected
-     * accounts' currencies (decision #11): the foreign/base amount only matters when
-     * currencies differ.
+     * Cross-field checks that depend on the selected accounts' currencies. A foreign
+     * purchase needs no rate (decision #11); only a cross-currency transfer is an
+     * exchange, and it must involve base with a destination amount (decision #16).
      *
      * @return array<int, \Closure(Validator): void>
      */
@@ -78,29 +80,25 @@ class StoreTransactionRequest extends FormRequest
                     $from = $this->account((int) $this->input('from_account_id'));
                     $to = $this->account((int) $this->input('to_account_id'));
 
-                    if ($from->currency !== $to->currency && ! $this->filled('to_amount')) {
-                        $validator->errors()->add('to_amount', 'Enter the amount received in the destination currency.');
-                    }
+                    if ($from->currency !== $to->currency) {
+                        // A cross-currency transfer is an exchange; it must involve base.
+                        if ($from->currency !== $base && $to->currency !== $base) {
+                            $validator->errors()->add('to_account_id', "A cross-currency transfer must involve your base currency ({$base}).");
+                        }
 
-                    if ($from->currency !== $base && $to->currency !== $base && ! $this->filled('base_amount')) {
-                        $validator->errors()->add('base_amount', "Enter the value of this transfer in {$base}.");
+                        if (! $this->filled('to_amount')) {
+                            $validator->errors()->add('to_amount', 'Enter the amount received in the destination currency.');
+                        }
                     }
 
                     $this->assertScale($validator, 'amount', (string) $from->currency);
                     $this->assertScale($validator, 'to_amount', (string) $to->currency);
-                    $this->assertScale($validator, 'base_amount', $base);
 
                     return;
                 }
 
                 $money = $this->account((int) $this->input('account_id'));
-
-                if ($money->currency !== $base && ! $this->filled('base_amount')) {
-                    $validator->errors()->add('base_amount', "Enter the amount in {$base} that was charged.");
-                }
-
                 $this->assertScale($validator, 'amount', (string) $money->currency);
-                $this->assertScale($validator, 'base_amount', $base);
             },
         ];
     }

@@ -78,8 +78,10 @@ class Account extends Model
     }
 
     /**
-     * Native balance: Σ amount in this account's own currency (decision #5).
-     * Computed from postings — the only source of truth, so it can't drift.
+     * Native balance: Σ amount (decision #5), computed from postings — the only source of
+     * truth, so it can't drift. Meaningful for a single-currency account (every
+     * asset/liability, decision #14); for a multi-currency category/equity use
+     * {@see balancesByCurrency()} instead, since summing across currencies is nonsense.
      */
     public function balance(): int
     {
@@ -87,10 +89,19 @@ class Account extends Model
     }
 
     /**
-     * Balance translated to the user's base currency: Σ base_amount.
+     * Per-currency native balances (decision #15): `['PEN' => 12300, 'USD' => -4500]`.
+     * The honest shape for categories/equity, which may hold postings in several
+     * currencies; an asset/liability simply returns a single entry.
+     *
+     * @return array<string, int>
      */
-    public function baseBalance(): int
+    public function balancesByCurrency(): array
     {
-        return (int) $this->postings()->sum('base_amount');
+        return $this->postings()
+            ->selectRaw('currency, SUM(amount) as total')
+            ->groupBy('currency')
+            ->pluck('total', 'currency')
+            ->map(fn (int|string $total): int => (int) $total)
+            ->all();
     }
 }

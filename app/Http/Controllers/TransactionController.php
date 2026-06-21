@@ -11,17 +11,23 @@ use App\Http\Requests\UpdateTransactionRequest;
 use App\Models\Account;
 use App\Models\Posting;
 use App\Models\Transaction;
+use App\Models\User;
+use App\Support\Ledger\RateDeviationGuard;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class TransactionController extends Controller
 {
-    public function __construct(private readonly RecordTransaction $record) {}
+    public function __construct(
+        private readonly RecordTransaction $record,
+        private readonly RateDeviationGuard $rateGuard,
+    ) {}
 
     public function index(Request $request): Response
     {
@@ -53,7 +59,7 @@ class TransactionController extends Controller
                 ->orderByDesc('date')
                 ->orderByDesc('id')
                 ->get()
-                ->map(fn (Transaction $transaction): array => $this->present($transaction, $base))
+                ->map(fn (Transaction $transaction): array => $this->present($transaction))
                 ->all()),
             'accounts' => $accounts->values(),
             'expenseCategories' => $this->categoryOptions($categories, AccountType::Expense),
@@ -65,7 +71,8 @@ class TransactionController extends Controller
     public function store(StoreTransactionRequest $request): RedirectResponse
     {
         $data = $request->validated();
-        [$kind, $postings] = $this->compose($data, (string) $request->user()->base_currency);
+        [$kind, $postings] = $this->compose($data);
+        $this->guardRate($postings, $request->user(), $request->boolean('confirm_rate'));
 
         $this->record->create(
             $request->user(),
@@ -86,7 +93,8 @@ class TransactionController extends Controller
         Gate::authorize('update', $transaction);
 
         $data = $request->validated();
-        [$kind, $postings] = $this->compose($data, (string) $request->user()->base_currency);
+        [$kind, $postings] = $this->compose($data);
+        $this->guardRate($postings, $request->user(), $request->boolean('confirm_rate'), (int) $transaction->id);
 
         $this->record->update(
             $transaction,
@@ -115,36 +123,35 @@ class TransactionController extends Controller
 
     /**
      * Turn the validated quick-entry payload into the balanced posting set the ledger
-     * expects. Native amounts live in the money account's currency; categories are
-     * always denominated in base (Model A, decision #4); the supplied base amount only
-     * matters when an FX leg is involved (decision #11).
+     * expects. Every leg is in native currency (decision #4): an expense/income is
+     * single-currency (money + category share the currency); a transfer is single-currency,
+     * or — when the two accounts differ — a swap of the two observed amounts, no rate
+     * stored (decision #11/#16).
      *
      * @param  array<string, mixed>  $data
      * @return array{0: TransactionKind, 1: array<int, PostingInput>}
      */
-    private function compose(array $data, string $base): array
+    private function compose(array $data): array
     {
         $kind = TransactionKind::from($data['kind']);
 
         if ($kind === TransactionKind::Transfer) {
-            return [$kind, $this->transferPostings($data, $base)];
+            return [$kind, $this->transferPostings($data)];
         }
 
         $money = Account::query()->findOrFail((int) $data['account_id']);
         $currency = (string) $money->currency;
-
         $amount = Money::parse($data['amount'], $currency)->minorUnits;
-        $baseAmount = $currency === $base
-            ? $amount
-            : Money::parse($data['base_amount'], $base)->minorUnits;
 
-        // Income flows money in (+) and the category records earnings (− normal);
-        // expense flows money out (−) and the category records spend (+ normal).
+        // Income flows money in (+) and the category records earnings (− normal); expense
+        // flows money out (−) and spend (+ normal). The category leg takes the SAME currency
+        // as the money leg (categories are multi-currency, decision #14) — single-currency,
+        // no base, no rate.
         $sign = $kind === TransactionKind::Income ? 1 : -1;
 
         return [$kind, [
-            new PostingInput($money->id, $sign * $amount, $currency, $sign * $baseAmount),
-            new PostingInput((int) $data['category_id'], -$sign * $baseAmount, $base, -$sign * $baseAmount),
+            new PostingInput($money->id, $sign * $amount, $currency),
+            new PostingInput((int) $data['category_id'], -$sign * $amount, $currency),
         ]];
     }
 
@@ -152,28 +159,48 @@ class TransactionController extends Controller
      * @param  array<string, mixed>  $data
      * @return array<int, PostingInput>
      */
-    private function transferPostings(array $data, string $base): array
+    private function transferPostings(array $data): array
     {
         $from = Account::query()->findOrFail((int) $data['from_account_id']);
         $to = Account::query()->findOrFail((int) $data['to_account_id']);
         $fromCurrency = (string) $from->currency;
         $toCurrency = (string) $to->currency;
 
-        $fromAmount = Money::parse($data['amount'], $fromCurrency)->minorUnits;
-        $toAmount = $toCurrency === $fromCurrency
-            ? $fromAmount
+        $fromMinor = Money::parse($data['amount'], $fromCurrency)->minorUnits;
+
+        // Same-currency transfer reuses the one amount; a cross-currency swap carries the
+        // destination's own observed amount (decision #16). Two facts, no rate — the
+        // structural "must involve base" rule is enforced in StoreTransactionRequest.
+        $toMinor = strtoupper($fromCurrency) === strtoupper($toCurrency)
+            ? $fromMinor
             : Money::parse($data['to_amount'], $toCurrency)->minorUnits;
 
-        $baseAmount = match (true) {
-            $fromCurrency === $base => $fromAmount,
-            $toCurrency === $base => $toAmount,
-            default => Money::parse($data['base_amount'], $base)->minorUnits,
-        };
-
         return [
-            new PostingInput($from->id, -$fromAmount, $fromCurrency, -$baseAmount),
-            new PostingInput($to->id, $toAmount, $toCurrency, $baseAmount),
+            new PostingInput($from->id, -$fromMinor, $fromCurrency),
+            new PostingInput($to->id, $toMinor, $toCurrency),
         ];
+    }
+
+    /**
+     * Soft deviation guard (decision #11): if the composed exchange's implied rate is far from
+     * the user's last rate for that pair, halt and ask the user to confirm — unless they already
+     * did (`confirm_rate`). Never a hard block; a confirmed submit skips the check entirely.
+     *
+     * @param  array<int, PostingInput>  $postings
+     *
+     * @throws ValidationException
+     */
+    private function guardRate(array $postings, User $user, bool $confirmed, ?int $excludeTransactionId = null): void
+    {
+        if ($confirmed) {
+            return;
+        }
+
+        $warning = $this->rateGuard->warn($user, (string) $user->base_currency, $postings, $excludeTransactionId);
+
+        if ($warning !== null) {
+            throw ValidationException::withMessages(['confirm_rate' => $warning]);
+        }
     }
 
     /**
@@ -183,14 +210,19 @@ class TransactionController extends Controller
      *
      * @return array<string, mixed>
      */
-    private function present(Transaction $transaction, string $base): array
+    private function present(Transaction $transaction): array
     {
         /** @var EloquentCollection<int, Posting> $postings */
         $postings = $transaction->postings;
 
-        $inflow = (int) $postings->where('base_amount', '>', 0)->sum('base_amount');
         $money = $postings->filter(fn (Posting $posting): bool => $posting->account->type->isMyAccount());
         $categories = $postings->filter(fn (Posting $posting): bool => $posting->account->type->isCategory());
+
+        // Per-currency display (decision #15): show the amount in its own currency — the
+        // destination leg for a transfer, the money leg otherwise.
+        $displayPosting = $transaction->kind === TransactionKind::Transfer
+            ? ($money->firstWhere('amount', '>', 0) ?? $money->first())
+            : $money->first();
 
         return [
             'id' => $transaction->id,
@@ -201,13 +233,15 @@ class TransactionController extends Controller
             'memo' => $transaction->memo,
             'summary' => $this->summary($transaction->kind, $money, $categories),
             'account_label' => $money->map(fn (Posting $posting): string => $posting->account->name)->implode(', '),
-            'amount_display' => Money::ofMinor($inflow, $base)->format(),
+            'amount_display' => $displayPosting === null
+                ? ''
+                : Money::ofMinor(abs((int) $displayPosting->amount), $displayPosting->currency)->format(),
             'direction' => match ($transaction->kind) {
                 TransactionKind::Income => 'in',
                 TransactionKind::Expense => 'out',
                 TransactionKind::Transfer => 'transfer',
             },
-            'edit' => $this->editPayload($transaction, $base, $money, $categories),
+            'edit' => $this->editPayload($transaction, $money, $categories),
         ];
     }
 
@@ -235,7 +269,7 @@ class TransactionController extends Controller
      * @param  EloquentCollection<int, Posting>  $categories
      * @return array<string, mixed>|null
      */
-    private function editPayload(Transaction $transaction, string $base, EloquentCollection $money, EloquentCollection $categories): ?array
+    private function editPayload(Transaction $transaction, EloquentCollection $money, EloquentCollection $categories): ?array
     {
         if ($transaction->postings->count() !== 2) {
             return null;
@@ -261,7 +295,6 @@ class TransactionController extends Controller
                 'to_account_id' => $to->account_id,
                 'amount' => Money::ofMinor(abs($from->amount), $from->currency)->amount(),
                 'to_amount' => Money::ofMinor(abs($to->amount), $to->currency)->amount(),
-                'base_amount' => Money::ofMinor(abs($from->base_amount), $base)->amount(),
             ];
         }
 
@@ -276,7 +309,6 @@ class TransactionController extends Controller
             'account_id' => $moneyPosting->account_id,
             'category_id' => $categoryPosting->account_id,
             'amount' => Money::ofMinor(abs($moneyPosting->amount), $moneyPosting->currency)->amount(),
-            'base_amount' => Money::ofMinor(abs($moneyPosting->base_amount), $base)->amount(),
         ];
     }
 

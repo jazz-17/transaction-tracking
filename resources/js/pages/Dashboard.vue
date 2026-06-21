@@ -13,8 +13,13 @@ type AccountBalance = {
     balance_display: string;
 };
 
+type NetWorthBucket = {
+    currency: string;
+    display: string;
+};
+
 defineProps<{
-    netWorthDisplay: string;
+    netWorth: NetWorthBucket[];
     assets: AccountBalance[];
     liabilities: AccountBalance[];
     baseCurrency: string;
@@ -42,9 +47,23 @@ defineOptions({
                     >
                         Net worth
                     </CardTitle>
-                    <p class="mt-1 text-3xl font-semibold tabular-nums">
-                        {{ netWorthDisplay }}
-                    </p>
+                    <div
+                        class="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1"
+                    >
+                        <p
+                            v-for="bucket in netWorth"
+                            :key="bucket.currency"
+                            class="text-3xl font-semibold tabular-nums"
+                        >
+                            {{ bucket.display }}
+                        </p>
+                        <p
+                            v-if="netWorth.length === 0"
+                            class="text-3xl font-semibold text-muted-foreground tabular-nums"
+                        >
+                            —
+                        </p>
+                    </div>
                 </div>
                 <Button as-child variant="outline" size="sm">
                     <Link :href="transactionsIndex()">

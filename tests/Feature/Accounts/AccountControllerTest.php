@@ -86,11 +86,11 @@ it('refuses to delete an account that has real transactions', function () {
     $txn = Transaction::factory()->for($this->user)->create();
     Posting::factory()->create([
         'transaction_id' => $txn->id, 'user_id' => $this->user->id, 'account_id' => $account->id,
-        'amount' => -5000, 'base_amount' => -5000, 'currency' => 'PEN',
+        'amount' => -5000, 'currency' => 'PEN',
     ]);
     Posting::factory()->create([
         'transaction_id' => $txn->id, 'user_id' => $this->user->id, 'account_id' => $category->id,
-        'amount' => 5000, 'base_amount' => 5000, 'currency' => 'PEN',
+        'amount' => 5000, 'currency' => 'PEN',
     ]);
 
     $this->delete(route('accounts.destroy', $account))->assertSessionHasErrors('account');
@@ -141,7 +141,7 @@ it('seeds an opening balance for a new asset account against equity', function (
     $checking = Account::where('name', 'Checking')->sole();
     expect($checking->balance())->toBe(100000)        // +S/1000 you have
         ->and($equity->balance())->toBe(-100000)      // balanced against equity
-        ->and($this->user->netWorth())->toBe(100000);
+        ->and($this->user->netWorth())->toBe(['PEN' => 100000]);
 });
 
 it('seeds a liability opening balance as money owed', function () {
@@ -153,31 +153,32 @@ it('seeds a liability opening balance as money owed', function () {
 
     $amex = Account::where('name', 'Amex')->sole();
     expect($amex->balance())->toBe(-50000)            // stored negative (you owe)
-        ->and($this->user->netWorth())->toBe(-50000); // reduces net worth
+        ->and($this->user->netWorth())->toBe(['PEN' => -50000]); // reduces net worth
 });
 
-it('seeds an FX opening balance using the supplied base value', function () {
+it('seeds a foreign opening balance in its own currency', function () {
     Account::factory()->equity()->for($this->user)->create();
 
+    // No base value — a foreign opening balance is seeded natively (decision #14).
     $this->post(route('accounts.store'), [
-        'name' => 'USD Savings', 'type' => 'asset', 'currency' => 'USD',
-        'opening_balance' => '100', 'opening_balance_base' => '370',
+        'name' => 'USD Savings', 'type' => 'asset', 'currency' => 'USD', 'opening_balance' => '100',
     ])->assertRedirect();
 
     $savings = Account::where('name', 'USD Savings')->sole();
-    expect($savings->balance())->toBe(10000)          // native USD
-        ->and($savings->baseBalance())->toBe(37000)   // translated to PEN
-        ->and($this->user->netWorth())->toBe(37000);
+    expect($savings->balance())->toBe(10000)                  // native USD
+        ->and($savings->balancesByCurrency())->toBe(['USD' => 10000])
+        ->and($this->user->netWorth())->toBe(['USD' => 10000]); // per-currency bucket
 });
 
-it('requires a base value for an FX opening balance', function () {
+it('accepts a foreign opening balance without any base value', function () {
     Account::factory()->equity()->for($this->user)->create();
 
+    // The old "opening balance in base" requirement is gone (decision #11/#14).
     $this->post(route('accounts.store'), [
         'name' => 'USD Savings', 'type' => 'asset', 'currency' => 'USD', 'opening_balance' => '100',
-    ])->assertSessionHasErrors('opening_balance_base');
+    ])->assertValid()->assertRedirect();
 
-    expect(Account::where('name', 'USD Savings')->exists())->toBeFalse();
+    expect(Account::where('name', 'USD Savings')->exists())->toBeTrue();
 });
 
 it('creates an account with no transaction when no opening balance is given', function () {
@@ -329,9 +330,9 @@ it('rolls a group balance up from its children', function () {
     $visa = Account::factory()->liability('PEN')->for($this->user)->create(['name' => 'Visa']);
 
     app(RecordTransaction::class)->create($this->user, TransactionKind::Expense, '2026-06-17', [
-        new PostingInput($visa->id, -8000, 'PEN', -8000),
-        new PostingInput($groceries->id, 5000, 'PEN', 5000),
-        new PostingInput($coffee->id, 3000, 'PEN', 3000),
+        new PostingInput($visa->id, -8000, 'PEN'),
+        new PostingInput($groceries->id, 5000, 'PEN'),
+        new PostingInput($coffee->id, 3000, 'PEN'),
     ]);
 
     // Categories are ordered by name: Coffee(0), Food(1), Groceries(2).

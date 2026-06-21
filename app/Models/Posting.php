@@ -17,12 +17,11 @@ use Illuminate\Support\Carbon;
  * @property int $user_id
  * @property int $amount
  * @property string $currency
- * @property int $base_amount
  * @property string|null $memo
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
-#[Fillable(['account_id', 'amount', 'currency', 'base_amount', 'memo'])]
+#[Fillable(['account_id', 'amount', 'currency', 'memo'])]
 class Posting extends Model
 {
     /** @use HasFactory<PostingFactory> */
@@ -35,7 +34,6 @@ class Posting extends Model
     {
         return [
             'amount' => 'integer',
-            'base_amount' => 'integer',
         ];
     }
 

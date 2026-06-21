@@ -26,8 +26,16 @@ class DashboardController extends Controller
             ->get()
             ->map(fn (Account $account): array => $this->present($account, $base));
 
+        // Net worth as per-currency buckets (decision #15) — not blended into one total.
+        $netWorth = collect($user->netWorth())
+            ->map(fn (int $minor, string $currency): array => [
+                'currency' => $currency,
+                'display' => Money::ofMinor($minor, $currency)->format(),
+            ])
+            ->values();
+
         return Inertia::render('Dashboard', [
-            'netWorthDisplay' => Money::ofMinor($user->netWorth(), $base)->format(),
+            'netWorth' => $netWorth,
             'assets' => $accounts->where('type', AccountType::Asset->value)->values(),
             'liabilities' => $accounts->where('type', AccountType::Liability->value)->values(),
             'baseCurrency' => $base,

@@ -18,12 +18,13 @@ return new class extends Migration
             // Signed integer minor units in the posting's own currency.
             $table->bigInteger('amount');
             $table->string('currency', 3);
-            // Signed integer minor units in the user's base currency; Σ base_amount = 0 per txn.
-            $table->bigInteger('base_amount');
+            // No stored base_amount and no stored rate — every base/rate figure is derived on
+            // read (decision #4). A cross-currency transaction is two observed amounts; its rate,
+            // when a report or the deviation guard needs it, is −B/F over the money legs (#11/#16).
             $table->string('memo')->nullable();
             $table->timestamps();
 
-            // Balance(account) = Σ amount; net worth = Σ base_amount scoped by user.
+            // Balance(account) = Σ amount per currency, scoped by user (decision #5/#15).
             $table->index('account_id');
             $table->index('user_id');
         });

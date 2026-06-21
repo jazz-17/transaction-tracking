@@ -8,6 +8,7 @@ use App\Models\Account;
 use App\Models\Posting;
 use App\Models\Transaction;
 use App\Models\User;
+use App\Support\Ledger\TransactionBalance;
 use DateTimeInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -130,26 +131,23 @@ final class RecordTransaction
             /** @var Account $account */
             $account = $accounts->get($posting->accountId);
 
-            // Invariant #4 / Model A: asset/liability legs carry the account's own
-            // currency; income/expense/equity legs are always in base. This is what keeps
-            // each account's native balance (Σ amount) a summable, meaningful number.
-            $expected = $account->type->usesNativeCurrency()
-                ? (string) $account->currency
-                : $baseCurrency;
-
-            if (strtoupper($posting->currency) !== strtoupper($expected)) {
-                throw InvalidTransactionException::currencyMismatch($posting->accountId, $expected, $posting->currency);
+            // Decision #14: asset/liability legs are currency-locked to the account's own
+            // currency; income/expense/equity accept any currency (their native balance is
+            // read per-currency). Nothing is pre-translated to base (decision #4).
+            if ($account->type->usesNativeCurrency() && strtoupper($posting->currency) !== strtoupper((string) $account->currency)) {
+                throw InvalidTransactionException::currencyMismatch($posting->accountId, (string) $account->currency, $posting->currency);
             }
         }
 
-        $baseSum = array_sum(array_map(
-            fn (PostingInput $posting): int => $posting->baseAmount,
+        // Conservation (decision #16): single-currency Σ amount = 0, or a two-currency
+        // swap including base (structural). Same check the model backstop runs.
+        TransactionBalance::assert($baseCurrency, array_map(
+            fn (PostingInput $posting): array => [
+                'amount' => $posting->amount,
+                'currency' => $posting->currency,
+            ],
             $postings,
         ));
-
-        if ($baseSum !== 0) {
-            throw InvalidTransactionException::unbalanced($baseSum);
-        }
     }
 
     /**
@@ -164,7 +162,6 @@ final class RecordTransaction
             $posting->user_id = $userId;
             $posting->amount = $input->amount;
             $posting->currency = strtoupper($input->currency);
-            $posting->base_amount = $input->baseAmount;
             $posting->memo = $input->memo;
             $posting->save();
         }

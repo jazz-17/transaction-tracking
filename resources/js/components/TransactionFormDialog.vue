@@ -49,7 +49,6 @@ export type TransactionEdit = {
     payee: string | null;
     memo: string | null;
     amount?: string;
-    base_amount?: string;
     account_id?: number;
     category_id?: number;
     from_account_id?: number;
@@ -83,12 +82,13 @@ const form = useForm({
     payee: '',
     memo: '',
     amount: '',
-    base_amount: '',
     account_id: null as number | null,
     category_id: null as number | null,
     from_account_id: null as number | null,
     to_account_id: null as number | null,
     to_amount: '',
+    // Set true to acknowledge a deviation-guard warning and record anyway (decision #11).
+    confirm_rate: false,
 });
 
 function resetForm() {
@@ -99,15 +99,22 @@ function resetForm() {
         payee: props.edit?.edit.payee ?? '',
         memo: props.edit?.edit.memo ?? '',
         amount: props.edit?.edit.amount ?? '',
-        base_amount: props.edit?.edit.base_amount ?? '',
         account_id: props.edit?.edit.account_id ?? null,
         category_id: props.edit?.edit.category_id ?? null,
         from_account_id: props.edit?.edit.from_account_id ?? null,
         to_account_id: props.edit?.edit.to_account_id ?? null,
         to_amount: props.edit?.edit.to_amount ?? '',
+        confirm_rate: false,
     });
     form.reset();
 }
+
+// Editing either amount retracts a prior rate confirmation and clears its warning, so a new
+// pair of amounts is re-checked by the deviation guard on the next submit.
+watch([() => form.amount, () => form.to_amount], () => {
+    form.confirm_rate = false;
+    form.clearErrors('confirm_rate');
+});
 
 watch(open, (isOpen) => {
     if (isOpen) {
@@ -129,24 +136,14 @@ const toAccount = computed(() =>
     props.accounts.find((account) => account.id === form.to_account_id),
 );
 
-// FX reveals: the foreign/base amount only appears when currencies actually differ.
-const showBase = computed(
-    () =>
-        !!selectedAccount.value &&
-        selectedAccount.value.currency !== props.baseCurrency,
-);
+// A cross-currency transfer is an exchange: it reveals the destination amount, and the
+// rate is derived server-side from the two real amounts (decision #16). A foreign purchase
+// needs nothing extra — it's recorded natively in its own currency.
 const showToAmount = computed(
     () =>
         !!fromAccount.value &&
         !!toAccount.value &&
         fromAccount.value.currency !== toAccount.value.currency,
-);
-const showTransferBase = computed(
-    () =>
-        !!fromAccount.value &&
-        !!toAccount.value &&
-        fromAccount.value.currency !== props.baseCurrency &&
-        toAccount.value.currency !== props.baseCurrency,
 );
 
 const amountCurrency = computed(() =>
@@ -155,15 +152,20 @@ const amountCurrency = computed(() =>
         : (selectedAccount.value?.currency ?? props.baseCurrency),
 );
 
+// Sanity-check hint for an exchange: the implied rate between the two amounts entered.
 const impliedRate = computed(() => {
-    const native = parseFloat(form.amount);
-    const base = parseFloat(form.base_amount);
-
-    if (!native || !base) {
+    if (!showToAmount.value) {
         return null;
     }
 
-    return `1 ${amountCurrency.value} ≈ ${(base / native).toFixed(4)} ${props.baseCurrency}`;
+    const from = parseFloat(form.amount);
+    const to = parseFloat(form.to_amount);
+
+    if (!from || !to) {
+        return null;
+    }
+
+    return `1 ${fromAccount.value?.currency} ≈ ${(to / from).toFixed(4)} ${toAccount.value?.currency}`;
 });
 
 function selectKind(kind: Kind) {
@@ -190,6 +192,12 @@ function submit() {
     }
 
     form.post(store().url, options);
+}
+
+// "Record anyway" on a deviation warning: acknowledge and resubmit (decision #11).
+function confirmAndRecord() {
+    form.confirm_rate = true;
+    submit();
 }
 </script>
 
@@ -369,32 +377,15 @@ function submit() {
                             min="0"
                             inputmode="decimal"
                         />
+                        <p
+                            v-if="impliedRate"
+                            class="text-xs text-muted-foreground"
+                        >
+                            {{ impliedRate }}
+                        </p>
                         <InputError :message="form.errors.to_amount" />
                     </div>
                 </template>
-
-                <!-- FX base amount -->
-                <div
-                    v-if="
-                        (form.kind !== 'transfer' && showBase) ||
-                        (form.kind === 'transfer' && showTransferBase)
-                    "
-                    class="grid gap-2"
-                >
-                    <Label for="txn-base"> Value in {{ baseCurrency }} </Label>
-                    <Input
-                        id="txn-base"
-                        v-model="form.base_amount"
-                        type="number"
-                        step="any"
-                        min="0"
-                        inputmode="decimal"
-                    />
-                    <p v-if="impliedRate" class="text-xs text-muted-foreground">
-                        {{ impliedRate }}
-                    </p>
-                    <InputError :message="form.errors.base_amount" />
-                </div>
 
                 <div class="grid grid-cols-2 gap-3">
                     <div class="grid gap-2">
@@ -426,6 +417,24 @@ function submit() {
                         placeholder="Optional"
                     />
                     <InputError :message="form.errors.memo" />
+                </div>
+
+                <!-- Soft deviation warning: the entered rate is far from the last one for
+                     this pair. Not a hard error — the user can record it anyway (decision #11). -->
+                <div
+                    v-if="form.errors.confirm_rate"
+                    class="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200"
+                >
+                    <p>{{ form.errors.confirm_rate }}</p>
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        :disabled="form.processing"
+                        @click="confirmAndRecord"
+                    >
+                        Record anyway
+                    </Button>
                 </div>
 
                 <DialogFooter>

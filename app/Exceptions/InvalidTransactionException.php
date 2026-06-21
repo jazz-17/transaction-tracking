@@ -15,9 +15,29 @@ final class InvalidTransactionException extends RuntimeException
         return new self("A transaction needs at least 2 postings, got {$count}.");
     }
 
-    public static function unbalanced(int $baseSum): self
+    public static function unbalanced(int $sum): self
     {
-        return new self("Transaction postings must sum to zero in base currency; got {$baseSum}.");
+        return new self("Single-currency transaction postings must sum to zero; got {$sum}.");
+    }
+
+    /**
+     * @param  array<int, string>  $currencies
+     */
+    public static function tooManyCurrencies(array $currencies): self
+    {
+        $list = implode(', ', $currencies);
+
+        return new self("A transaction may touch at most two currencies, one being base; got [{$list}].");
+    }
+
+    /**
+     * @param  array<int, string>  $currencies
+     */
+    public static function exchangeWithoutBase(array $currencies): self
+    {
+        $list = implode(', ', $currencies);
+
+        return new self("A cross-currency exchange must include the base currency; got [{$list}].");
     }
 
     /**

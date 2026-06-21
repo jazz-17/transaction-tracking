@@ -19,7 +19,7 @@ it('seeds the equity account, a Cash asset, and categories', function () {
         ->and($accounts->where('type', AccountType::Income)->count())->toBeGreaterThan(0);
 });
 
-it('seeds categories without a currency (base by Model A)', function () {
+it('seeds categories with a null currency (they accept any currency per posting, decision #14)', function () {
     $user = User::factory()->create(['base_currency' => 'PEN']);
 
     app(ProvisionNewUserLedger::class)->provision($user);
@@ -27,6 +27,17 @@ it('seeds categories without a currency (base by Model A)', function () {
     $groceries = $user->accounts()->where('name', 'Groceries')->first();
     expect($groceries->type)->toBe(AccountType::Expense)
         ->and($groceries->currency)->toBeNull();
+});
+
+it('seeds a Fees & Charges expense category for bank/FX fees', function () {
+    $user = User::factory()->create(['base_currency' => 'PEN']);
+
+    app(ProvisionNewUserLedger::class)->provision($user);
+
+    $fees = $user->accounts()->where('name', 'Fees & Charges')->first();
+    expect($fees)->not->toBeNull()
+        ->and($fees->type)->toBe(AccountType::Expense)
+        ->and($fees->currency)->toBeNull();
 });
 
 it('is idempotent', function () {

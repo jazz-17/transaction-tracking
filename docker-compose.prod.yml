@@ -1,0 +1,59 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    environment:
+      - APP_ENV=production
+    env_file: .env.production
+    networks:
+      - default
+      - shared-pg
+    restart: unless-stopped
+
+  # Reached only by cloudflared over the internal compose network (no public ports).
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: nginx
+    depends_on:
+      - app
+    networks:
+      - default
+    restart: unless-stopped
+
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+    command: php artisan queue:work --tries=3 --timeout=60 --sleep=3
+    environment:
+      - APP_ENV=production
+    env_file: .env.production
+    networks:
+      - default
+      - shared-pg
+    restart: unless-stopped
+
+  # Cloudflare Tunnel connector. Dials OUT to Cloudflare (no inbound ports) and
+  # forwards traffic to nginx over the internal compose network (http://nginx:80).
+  # Dedicated tunnel for tally.spode.dev. Set CLOUDFLARE_TUNNEL_TOKEN in .env.production.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - nginx
+    networks:
+      - default
+    restart: unless-stopped
+
+networks:
+  default:
+  # PostgreSQL is hosted by the reservation-system stack. Its `postgres` service
+  # joins this external network with the alias `shared-postgres` (see DEPLOY.md).
+  # Create once on the host: `docker network create shared-pg`.
+  shared-pg:
+    external: true

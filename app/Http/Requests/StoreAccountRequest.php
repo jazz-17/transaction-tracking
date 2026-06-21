@@ -47,13 +47,12 @@ class StoreAccountRequest extends FormRequest
             // against the equity account via RecordTransaction. Zero is allowed and
             // simply means "no starting balance" — same as leaving it blank.
             'opening_balance' => ['nullable', 'numeric', 'min:0'],
-            'opening_balance_base' => ['nullable', 'numeric', 'gt:0'],
         ];
     }
 
     /**
-     * The base value of an FX opening balance can't be inferred without a rate
-     * (decision #11), so require it when the account currency differs from base.
+     * An opening balance is entered in the account's own currency (decision #14) — no base
+     * value, no rate. Just guard its scale against that currency's exponent.
      *
      * @return array<int, \Closure(Validator): void>
      */
@@ -65,14 +64,7 @@ class StoreAccountRequest extends FormRequest
                     return;
                 }
 
-                $base = (string) $this->user()->base_currency;
-
-                if ($this->input('currency') !== $base && ! $this->filled('opening_balance_base')) {
-                    $validator->errors()->add('opening_balance_base', "Enter the opening balance in {$base}.");
-                }
-
                 $this->assertScale($validator, 'opening_balance', (string) $this->input('currency'));
-                $this->assertScale($validator, 'opening_balance_base', $base);
             },
         ];
     }
