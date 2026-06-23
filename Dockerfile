@@ -1,9 +1,9 @@
 # ============================================
 # Base stage: PHP 8.4 FPM with extensions
 # ============================================
-FROM composer:2 AS composer
+FROM composer:2@sha256:7725eb4545c438629ae8bde3ef0bb9a5038ef566126ad878442a69007242d267 AS composer
 
-FROM php:8.4-fpm-bookworm AS base
+FROM php:8.4-fpm-bookworm@sha256:66cf4b823e8dcde762ffa705b8589d592d709e0705ce6fdcd832d9a7ea4ed0f3 AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
@@ -64,7 +64,7 @@ RUN composer dump-autoload --optimize \
 # ============================================
 # Node build stage (frontend assets)
 # ============================================
-FROM node:22-slim AS node-build
+FROM node:22-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS node-build
 
 WORKDIR /build
 
@@ -129,7 +129,7 @@ CMD ["php-fpm"]
 # ============================================
 # Nginx stage (serves static files + proxies PHP)
 # ============================================
-FROM nginx:alpine AS nginx
+FROM nginx:alpine@sha256:20316569d8f81a160065d7d2a5eeffc7ca97d79022462ee255fd23fa103a6b5c AS nginx
 
 COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=prod /var/www/html/public /var/www/html/public

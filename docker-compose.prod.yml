@@ -7,6 +7,15 @@ services:
     environment:
       - APP_ENV=production
     env_file: .env.production
+    healthcheck:
+      # php-fpm speaks FastCGI, not HTTP, so probe the TCP port with the bundled
+      # php CLI (no extra tooling needed in the image). A successful connect means
+      # the FPM master is accepting requests.
+      test: ["CMD-SHELL", "php -r '$$c=@fsockopen(\"127.0.0.1\", 9000); exit($$c ? 0 : 1);'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     networks:
       - default
       - shared-pg
@@ -19,7 +28,16 @@ services:
       dockerfile: Dockerfile
       target: nginx
     depends_on:
-      - app
+      app:
+        condition: service_healthy
+    healthcheck:
+      # /healthz is answered by nginx directly (see docker/nginx/default.conf), so
+      # this confirms nginx is serving without depending on php-fpm or the DB.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
       - default
     restart: unless-stopped
@@ -42,10 +60,17 @@ services:
   # forwards traffic to nginx over the internal compose network (http://nginx:80).
   # Dedicated tunnel for tally.spode.dev. Set CLOUDFLARE_TUNNEL_TOKEN in .env.production.
   cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    # Pinned for reproducible deploys (latest as of 2026-06; CalVer ~monthly).
+    # Cloudflare only supports versions within ~1yr of latest, so bump periodically.
+    image: cloudflare/cloudflared:2026.6.1
+    # Token via env (TUNNEL_TOKEN) rather than a CLI arg so the secret isn't exposed
+    # in the container's process list. CLOUDFLARE_TUNNEL_TOKEN is set in .env.production.
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - nginx
+      nginx:
+        condition: service_healthy
     networks:
       - default
     restart: unless-stopped
