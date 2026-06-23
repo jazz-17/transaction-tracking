@@ -1,9 +1,11 @@
 # Deployment Guide
 
-This app is deployed to the **same VPS as `reservation-system`** and **shares that
-stack's PostgreSQL instance** (a dedicated database + role, reached over a shared
-Docker network). It is served on **https://tally.spode.dev** through its **own**
-Cloudflare Tunnel. There are no public web ports.
+This app is deployed to the **same VPS as `reservation-system`** and **shares a
+PostgreSQL instance** with it (a dedicated database + role, reached over a shared
+Docker network). That Postgres is **not** part of either app stack — it lives in its
+own `/srv/infra` stack so its lifecycle is independent (bringing an app down, even
+`down -v`, never touches it). The app is served on **https://tally.spode.dev** through
+its **own** Cloudflare Tunnel. There are no public web ports.
 
 ## Local Development
 
@@ -23,9 +25,10 @@ composer run dev
 - `nginx` — static files + FastCGI to `app`. Reached only by `cloudflared`.
 - `queue` — `php artisan queue:work` (e.g. password-reset and future emails).
 - `cloudflared` — dedicated Cloudflare Tunnel for `tally.spode.dev` → `http://nginx:80`.
-- **No `postgres` / `redis` containers here** — queue/cache/session use the `database`
-  driver against the shared PostgreSQL. **No volumes** — all state lives in Postgres,
-  logs go to `stderr`.
+- **No `postgres` / `redis` containers in this stack** — queue/cache/session use the
+  `database` driver against the shared Postgres in `/srv/infra` (reached over the
+  `shared-pg` network at the alias `shared-postgres`). **No volumes** — all state lives
+  in Postgres, logs go to `stderr`.
 
 ### Networking (Cloudflare Tunnel)
 
@@ -42,32 +45,29 @@ inbound ports; outbound UDP 7844 is all `cloudflared` needs).
 
 ### One-time: shared PostgreSQL
 
-Run these once on the host. They (a) create the shared network, (b) attach the
-reservation stack's Postgres to it, and (c) create this app's database + role.
+The shared Postgres cluster (`/srv/infra` stack, container `infra-postgres-1`) and the
+`shared-pg` network are created/owned by that stack — see `/srv/infra/docker-compose.yml`.
+If they don't exist yet, bring them up first:
 
 ```bash
-# 1. Create the shared docker network (idempotent)
-docker network create shared-pg || true
-
-# 2. Redeploy the reservation stack so its `postgres` joins shared-pg
-#    (alias: shared-postgres). This RECREATES the postgres container — brief
-#    reservation-app DB blip; data is safe in the named volume.
-cd /srv/reservation-system
-git pull
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d
-
-# 3. Create the dedicated database + least-privilege role.
-#    `init.sql` only runs on an empty data dir, so this is manual.
-docker compose --env-file .env.production -f docker-compose.prod.yml exec postgres \
-  psql -U postgres -c "CREATE ROLE transaction_tracking WITH LOGIN PASSWORD 'STRONG_DB_PASSWORD';"
-docker compose --env-file .env.production -f docker-compose.prod.yml exec postgres \
-  psql -U postgres -c "CREATE DATABASE transaction_tracking OWNER transaction_tracking;"
-
-# 4. PostgreSQL 15+: grant the role rights on its database's public schema,
-#    otherwise `migrate` fails with "permission denied for schema public".
-docker compose --env-file .env.production -f docker-compose.prod.yml exec postgres \
-  psql -U postgres -d transaction_tracking -c "GRANT ALL ON SCHEMA public TO transaction_tracking;"
+docker network create shared-pg || true   # idempotent; usually already exists
+cd /srv/infra && docker compose up -d      # starts infra-postgres-1 on shared-pg
 ```
+
+This app's database + role are recorded in `/srv/infra/databases.sql` and applied once.
+The `POSTGRES_*` env vars only seed an empty volume, so per-app databases are manual:
+
+```bash
+# /srv/infra/databases.sql contains:
+#   CREATE ROLE transaction_tracking WITH LOGIN PASSWORD 'STRONG_DB_PASSWORD';
+#   CREATE DATABASE transaction_tracking OWNER transaction_tracking;
+docker exec -i infra-postgres-1 psql -U postgres < /srv/infra/databases.sql
+```
+
+No `GRANT ... ON SCHEMA public` is needed: the role **owns** its database, so on
+PostgreSQL 15+ it is implicitly a member of `pg_database_owner` and already holds
+`USAGE`+`CREATE` on the `public` schema. (`STRONG_DB_PASSWORD` must match `DB_PASSWORD`
+in `.env.production`.)
 
 ### First-time Setup
 
@@ -133,8 +133,10 @@ docker compose --env-file .env.production -f docker-compose.prod.yml exec app ph
 docker compose --env-file .env.production -f docker-compose.prod.yml exec app sh
 ```
 
-> The PostgreSQL volume belongs to the **reservation-system** stack. Destructive DB
-> operations (`down -v`) must be run there, and would wipe **both** apps' databases.
+> The PostgreSQL data lives in the external volume `shared_postgres_data`, owned by the
+> **`/srv/infra`** stack and shared by every app's database. It is `external`, so a stray
+> `docker compose down -v` in this app stack can't touch it. Destructive operations must
+> be run deliberately against `/srv/infra` and would wipe **all** apps' databases.
 
 ### Connecting to Production DB (via SSH tunnel)
 

@@ -33,7 +33,10 @@ services:
     healthcheck:
       # /healthz is answered by nginx directly (see docker/nginx/default.conf), so
       # this confirms nginx is serving without depending on php-fpm or the DB.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/healthz || exit 1"]
+      # Use 127.0.0.1, not localhost: inside the container localhost resolves to
+      # IPv6 ::1 first, but nginx listens only on IPv4 (the base image skips its
+      # add-IPv6-listen step because our default.conf isn't the packaged one).
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
