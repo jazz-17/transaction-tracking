@@ -87,8 +87,13 @@ not a flat `1 × legCount`.
 Was: the only protection against a fat-fingered exchange amount, and it didn't exist.
 Now implemented as `App\Support\Ledger\RateDeviationGuard` (warn-and-confirm, never blocks;
 first exchange for a pair sets the baseline; a >2× swing surfaces `confirm_rate`, which the
-entry dialog acknowledges with "Record anyway"). Covered by feature tests in
-`TransactionControllerTest`.
+entry dialog acknowledges with "Record anyway"). The 2× band lives in one place
+(`RateDeviationGuard::FACTOR`) and is shared with the client. Beyond the on-submit check, the
+entry form now shows a **proactive** reference while typing — the pair's last rate and the live
+implied rate (both priced base-per-foreign, the same orientation the guard uses), turned amber
+past the band, with a first-time nudge when a pair has no baseline yet. Covered by feature tests
+in `TransactionControllerTest` (baseline-silent, within-band, gross-deviation, confirm-proceeds,
+both sides of the 2× boundary, and the `lastRates`/`rateBand` form contract).
 
 ---
 
@@ -105,9 +110,11 @@ entry dialog acknowledges with "Record anyway"). Covered by feature tests in
   #14. Every `balancesByCurrency()` assertion uses a single-currency bucket, which is why bug
   #1 slipped through. A Groceries-with-PEN-and-USD test would have caught it.
 - ☐ **Order-dependent `toBe()` on a `GROUP BY` result.**
-  `tests/Feature/Ledger/RecordTransactionTest.php:210` and `tests/Feature/DashboardTest.php:46`
-  assert `['PEN' => …, 'USD' => …]` ordering, which passes only because SQLite emits PEN first
-  (`===` is order-sensitive). Sort the buckets deterministically (in `netWorth()` or the test).
+  `tests/Feature/Ledger/RecordTransactionTest.php:215` asserts `['PEN' => …, 'USD' => …]`
+  ordering, which passes only because SQLite emits PEN first (`===` is order-sensitive) and
+  `netWorth()` (`User.php:75`) has no `orderBy`. Sort the buckets deterministically (in
+  `netWorth()` or the test). (`DashboardTest` is single-bucket today, so it carries no ordering
+  risk yet — but a multi-bucket dashboard test would inherit the same trap.)
 - ☐ **No Dashboard feature test** with multiple net-worth buckets or the empty-state `—` branch
   (`Dashboard.vue:60-65`).
 

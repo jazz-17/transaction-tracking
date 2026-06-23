@@ -61,6 +61,10 @@ const props = defineProps<{
     expenseCategories: CategoryOption[];
     incomeCategories: CategoryOption[];
     baseCurrency: string;
+    // Last rate per foreign currency, base units per 1 foreign (e.g. { USD: '3.7' }), and the
+    // deviation band the server warns past — both drive the live exchange reference.
+    lastRates: Record<string, string>;
+    rateBand: number;
     edit?: { id: number; edit: TransactionEdit } | null;
 }>();
 
@@ -152,20 +156,59 @@ const amountCurrency = computed(() =>
         : (selectedAccount.value?.currency ?? props.baseCurrency),
 );
 
-// Sanity-check hint for an exchange: the implied rate between the two amounts entered.
-const impliedRate = computed(() => {
+// Live exchange reference. The rate is always priced as base units per 1 foreign unit — the
+// same orientation the server's deviation guard uses — so the entered ("implied") rate and the
+// "last used" reference are directly comparable whichever direction the transfer runs. Null
+// unless this is a base↔foreign exchange (decision #11).
+const rateHint = computed(() => {
     if (!showToAmount.value) {
         return null;
     }
 
-    const from = parseFloat(form.amount);
-    const to = parseFloat(form.to_amount);
+    const base = props.baseCurrency;
+    const fromCurrency = fromAccount.value?.currency;
+    const toCurrency = toAccount.value?.currency;
 
-    if (!from || !to) {
+    if (!fromCurrency || !toCurrency) {
         return null;
     }
 
-    return `1 ${fromAccount.value?.currency} ≈ ${(to / from).toFixed(4)} ${toAccount.value?.currency}`;
+    const fromAmount = parseFloat(form.amount);
+    const toAmount = parseFloat(form.to_amount);
+
+    // One leg is base, the other foreign (the server enforces this); price the foreign leg in
+    // base regardless of which side the user entered as "from".
+    let foreign: string;
+    let baseAmount: number;
+    let foreignAmount: number;
+
+    if (fromCurrency === base) {
+        foreign = toCurrency;
+        baseAmount = fromAmount;
+        foreignAmount = toAmount;
+    } else if (toCurrency === base) {
+        foreign = fromCurrency;
+        baseAmount = toAmount;
+        foreignAmount = fromAmount;
+    } else {
+        return null;
+    }
+
+    const lastRate = props.lastRates[foreign] ?? null;
+    const implied =
+        baseAmount > 0 && foreignAmount > 0 ? baseAmount / foreignAmount : null;
+
+    const ratio = implied !== null && lastRate !== null ? implied / parseFloat(lastRate) : null;
+    const diverges =
+        ratio !== null && (ratio >= props.rateBand || ratio <= 1 / props.rateBand);
+
+    return {
+        base,
+        foreign,
+        implied: implied !== null ? implied.toFixed(4) : null,
+        lastRate,
+        diverges,
+    };
 });
 
 function selectKind(kind: Kind) {
@@ -377,12 +420,34 @@ function confirmAndRecord() {
                             min="0"
                             inputmode="decimal"
                         />
-                        <p
-                            v-if="impliedRate"
-                            class="text-xs text-muted-foreground"
-                        >
-                            {{ impliedRate }}
-                        </p>
+                        <div v-if="rateHint" class="space-y-0.5 text-xs">
+                            <p
+                                v-if="rateHint.implied"
+                                :class="
+                                    rateHint.diverges
+                                        ? 'font-medium text-amber-600 dark:text-amber-400'
+                                        : 'text-muted-foreground'
+                                "
+                            >
+                                1 {{ rateHint.foreign }} ≈
+                                {{ rateHint.implied }} {{ rateHint.base }}
+                                <template v-if="rateHint.diverges">
+                                    — far from your last; double-check the
+                                    amounts</template
+                                >
+                            </p>
+                            <p
+                                v-if="rateHint.lastRate"
+                                class="text-muted-foreground"
+                            >
+                                Last used: 1 {{ rateHint.foreign }} ≈
+                                {{ rateHint.lastRate }} {{ rateHint.base }}
+                            </p>
+                            <p v-else class="text-muted-foreground">
+                                First {{ rateHint.foreign }}↔{{ rateHint.base }}
+                                exchange — this sets your reference rate.
+                            </p>
+                        </div>
                         <InputError :message="form.errors.to_amount" />
                     </div>
                 </template>

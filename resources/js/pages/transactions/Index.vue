@@ -40,6 +40,8 @@ defineProps<{
     expenseCategories: CategoryOption[];
     incomeCategories: CategoryOption[];
     baseCurrency: string;
+    lastRates: Record<string, string>;
+    rateBand: number;
 }>();
 
 defineOptions({
@@ -75,6 +77,8 @@ function remove(transaction: TransactionRow) {
                     :expense-categories="expenseCategories"
                     :income-categories="incomeCategories"
                     :base-currency="baseCurrency"
+                    :last-rates="lastRates"
+                    :rate-band="rateBand"
                 >
                     <Button size="sm">
                         <Plus class="size-4" /> New transaction
@@ -111,6 +115,8 @@ function remove(transaction: TransactionRow) {
                             :expense-categories="expenseCategories"
                             :income-categories="incomeCategories"
                             :base-currency="baseCurrency"
+                            :last-rates="lastRates"
+                            :rate-band="rateBand"
                         >
                             <Button size="sm">
                                 <Plus class="size-4" /> New transaction
@@ -195,6 +201,8 @@ function remove(transaction: TransactionRow) {
                                 :expense-categories="expenseCategories"
                                 :income-categories="incomeCategories"
                                 :base-currency="baseCurrency"
+                                :last-rates="lastRates"
+                                :rate-band="rateBand"
                                 :edit="{
                                     id: transaction.id,
                                     edit: transaction.edit,

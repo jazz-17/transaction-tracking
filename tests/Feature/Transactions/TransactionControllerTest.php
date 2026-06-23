@@ -205,6 +205,61 @@ it('does not warn when the exchange rate is close to the last', function () {
     expect(Transaction::count())->toBe(2);
 });
 
+it('stays silent just inside the 2x deviation band', function () {
+    // Baseline 3.70 (S/370 <-> $100).
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '370', 'to_amount' => '100',
+    ]);
+
+    // 7.30 / 3.70 = 1.97x, a hair under the 2x threshold -> no warning.
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-18',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '730', 'to_amount' => '100',
+    ])->assertRedirect()->assertSessionHasNoErrors();
+
+    expect(Transaction::count())->toBe(2);
+});
+
+it('exposes the last rate per foreign currency and the deviation band to the form', function () {
+    // No exchanges yet → no reference rates, but the band is always present.
+    $this->get(route('transactions.index'))->assertInertia(fn (Assert $page) => $page
+        ->where('lastRates', [])
+        ->where('rateBand', 2) // float 2.0 serializes to a bare 2 in JSON
+    );
+
+    // Record a PEN↔USD exchange at 3.70; it becomes the USD reference rate.
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '370', 'to_amount' => '100',
+    ]);
+
+    $this->get(route('transactions.index'))->assertInertia(fn (Assert $page) => $page
+        ->where('lastRates.USD', '3.7')
+    );
+});
+
+it('warns just past the 2x deviation band', function () {
+    // Baseline 3.70 (S/370 <-> $100).
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-17',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '370', 'to_amount' => '100',
+    ]);
+
+    // 7.50 / 3.70 = 2.03x, a hair over the threshold -> soft-blocked pending confirmation.
+    $this->post(route('transactions.store'), [
+        'kind' => 'transfer', 'date' => '2026-06-18',
+        'from_account_id' => $this->checking->id, 'to_account_id' => $this->savingsUsd->id,
+        'amount' => '750', 'to_amount' => '100',
+    ])->assertSessionHasErrors('confirm_rate');
+
+    expect(Transaction::count())->toBe(1); // only the baseline recorded
+});
+
 it('exposes an edit payload that round-trips a single-currency expense', function () {
     $this->post(route('transactions.store'), [
         'kind' => 'expense', 'date' => '2026-06-17',

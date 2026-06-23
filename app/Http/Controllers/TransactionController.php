@@ -45,6 +45,15 @@ class TransactionController extends Controller
                 'currency' => (string) $account->currency,
             ]);
 
+        // The distinct non-base currencies the user could exchange into; each maps to the
+        // last rate the entry form shows as a live reference (decision #11).
+        $foreignCurrencies = $accounts
+            ->pluck('currency')
+            ->reject(fn (string $currency): bool => strtoupper($currency) === strtoupper($base))
+            ->unique()
+            ->values()
+            ->all();
+
         $categories = Account::query()
             ->whereIn('type', [AccountType::Income->value, AccountType::Expense->value])
             ->where('archived', false)
@@ -65,6 +74,11 @@ class TransactionController extends Controller
             'expenseCategories' => $this->categoryOptions($categories, AccountType::Expense),
             'incomeCategories' => $this->categoryOptions($categories, AccountType::Income),
             'baseCurrency' => $base,
+            // Live exchange reference: the last rate per foreign currency (base units per 1
+            // foreign) plus the deviation band, so the form flags a slip before submit, not
+            // only after (decision #11). The band is the guard's own constant — one source.
+            'lastRates' => $this->rateGuard->lastRatesByForeignCurrency($request->user(), $base, $foreignCurrencies),
+            'rateBand' => RateDeviationGuard::FACTOR,
         ]);
     }
 

@@ -21,10 +21,22 @@ use App\Support\Money;
 final class RateDeviationGuard
 {
     /**
-     * Warn only on a clear fat-finger — roughly a missing/extra zero — never on market drift.
-     * A 2× band catches a 10× or 100× slip comfortably while staying quiet on real movement.
+     * The deviation band, as a multiplicative factor: an entry is flagged when its implied
+     * rate is ≥ FACTOR× or ≤ 1/FACTOR× the baseline — a symmetric one-octave window.
+     *
+     * This is a typo *tripwire*, not a rate estimator, so the band is deliberately wide and
+     * the baseline is the single most recent rate ({@see lastRate()}), not an average. The
+     * width is what keeps that noisy one-observation baseline usable: it stays quiet on real
+     * market drift (which moves far less than 2× between a user's own consecutive entries)
+     * while still catching the order-of-magnitude slips it exists for — a missing/extra zero.
+     *
+     * The trade-off is two intentional blind spots: a sub-2× slip (e.g. a near-double digit
+     * transposition) and any proportional both-leg error (the rate is scale-invariant) pass
+     * silently. Both are out of scope for a warn-and-confirm guard, and no baseline statistic
+     * — mean, median, EWMA — would catch them; a tighter band would only trade them for false
+     * warnings against the noisy baseline.
      */
-    private const FACTOR = 2.0;
+    public const FACTOR = 2.0;
 
     /**
      * Return a human warning when the composed postings are a base↔foreign exchange whose
@@ -69,6 +81,34 @@ final class RateDeviationGuard
             self::trim($last),
             $base,
         );
+    }
+
+    /**
+     * The user's most recent implied rate for each base↔foreign pair, keyed by foreign
+     * currency code and formatted as base units per 1 foreign unit (e.g. ['USD' => '3.7']).
+     * Pairs with no prior exchange are omitted. Drives the entry form's "last used" reference —
+     * the proactive, at-entry complement to {@see warn()}'s on-submit check (decision #11).
+     *
+     * @param  array<int, string>  $foreignCurrencies
+     * @return array<string, string>
+     */
+    public function lastRatesByForeignCurrency(User $user, string $baseCurrency, array $foreignCurrencies): array
+    {
+        $base = strtoupper($baseCurrency);
+        $rates = [];
+
+        foreach (array_unique(array_map(strtoupper(...), $foreignCurrencies)) as $foreign) {
+            if ($foreign === $base) {
+                continue;
+            }
+
+            $rate = $this->lastRate($user, $base, $foreign, null);
+            if ($rate !== null) {
+                $rates[$foreign] = self::trim($rate);
+            }
+        }
+
+        return $rates;
     }
 
     /**
